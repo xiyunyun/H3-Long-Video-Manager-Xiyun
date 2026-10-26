@@ -52,6 +52,8 @@ const LABELS = {
     person_crop: "人物裁切",
     person_crop_expand_percent: "人物框外扩 %",
     save_dtype: "素材存盘精度",
+    playback_speed: "参考视频慢放倍率",
+    playback_speed_custom: "自定义慢放倍率",
 };
 
 const TOOLTIPS = {
@@ -67,6 +69,8 @@ const TOOLTIPS = {
     person_crop: "检测人物并裁掉画面边缘，让人物占画面更大。",
     person_crop_expand_percent: "人物框外扩百分比，0 为紧贴检测框（仍保持原画面比例）。",
     save_dtype: "素材库里的片段张量用什么精度落盘。源视频本身只有 8-bit，所以 int8 体积减半而画面读回来一样；只有需要保留原始浮点张量时才选 fp16。同一个库里可以混用，读取时按各自存的精度还原。",
+    playback_speed: "在切分之前把整条视频放慢（帧复制，不插帧）。之后所有分段和 22 帧 Motion Context 都在慢放后的时间轴上；1.0x 保持原有行为。合并时在 Long Builder 里选择相同倍率恢复原速。",
+    playback_speed_custom: "只在慢放倍率选 custom 时生效：填 0~1.0 之间的一位小数（如 0.6），表示慢放到原速的 60%。",
 };
 
 // Raw values are kept as-is; only the text in the dropdown is Chinese.
@@ -85,6 +89,12 @@ const OPTION_LABELS = {
         "22": "22 帧（默认）",
         "39": "39 帧",
         "56": "56 帧",
+    },
+    playback_speed: {
+        "1.0x": "1.0x（原速，默认）",
+        "0.75x": "0.75x（慢放到 75%）",
+        "0.5x": "0.5x（慢放到 50%）",
+        custom: "custom（自定义 0.1~1.0x）",
     },
 };
 

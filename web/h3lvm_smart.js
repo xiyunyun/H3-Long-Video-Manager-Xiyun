@@ -59,6 +59,8 @@ const LABELS = {
     save_enabled: "保存到素材库",
     save_preview_mp4: "生成 MP4 预览",
     save_dtype: "素材存盘精度",
+    playback_speed: "参考视频慢放倍率",
+    playback_speed_custom: "自定义慢放倍率",
 };
 
 const TOOLTIPS = {
@@ -71,6 +73,8 @@ const TOOLTIPS = {
     save_enabled: "关闭后只在画布输出，不写入素材库。",
     save_preview_mp4: "为每个片段额外生成可播放的 MP4 预览。",
     save_dtype: "素材库里的片段张量用什么精度落盘。源视频本身只有 8-bit，所以 int8 体积减半而画面读回来一样；只有需要保留原始浮点张量时才选 fp16。同一个库里可以混用，读取时按各自存的精度还原。",
+    playback_speed: "在镜头检测之前把整条视频放慢（帧复制，不插帧）。之后检测到的镜头切点、Motion Context 和保存的片段都在慢放后的时间轴上；1.0x 保持原有行为。合并时在 Long Builder 里选择相同倍率恢复原速。",
+    playback_speed_custom: "只在慢放倍率选 custom 时生效：填 0~1.0 之间的一位小数（如 0.6），表示慢放到原速的 60%。",
 };
 
 // Raw values are kept as-is; only the text in the dropdown is Chinese.
@@ -90,6 +94,12 @@ const OPTION_LABELS = {
     save_dtype: {
         int8: "int8（体积减半，推荐）",
         fp16: "fp16（旧格式，体积翻倍）",
+    },
+    playback_speed: {
+        "1.0x": "1.0x（原速，默认）",
+        "0.75x": "0.75x（慢放到 75%）",
+        "0.5x": "0.5x（慢放到 50%）",
+        custom: "custom（自定义 0.1~1.0x）",
     },
 };
 

@@ -12,11 +12,17 @@ from comfy_api.latest import io
 
 import logging
 import os
+import shutil
+import subprocess
+
+import numpy as np
 import torch
 
 from ..core.models import MotionContextConfig, MOTION_CONTEXT_OPTIONS, SourceVideoInfo, WorkingVideoConfig
 from ..core.manifest import build_manifest
-from ..core.frame_rate import resample_video
+from ..core.frame_rate import (
+    PLAYBACK_SPEED_OPTIONS, parse_playback_speed, resample_video, slowdown_video,
+)
 from ..core.h3_grid import is_valid_h3_frame_count
 from ..core.person_crop import crop_video_to_person
 from ..core.smart_split import (
@@ -25,7 +31,7 @@ from ..core.smart_split import (
 from .segment_store import (
     save_segment as _save_segment, load_segment, load_project_index,
     list_project, list_projects, sanitize_project_name, DEFAULT_PROJECT,
-    normalize_save_dtype,
+    normalize_save_dtype, set_project_playback_meta,
 )
 # RAFOLIE 2026-10-19: the Picker's second library. Kept out of segment_store on purpose -
 # the cut bin stores tensors, this one stores the user's own video files untouched.
@@ -146,7 +152,7 @@ def _pad_silent_audio(audio: dict, target_samples: int) -> dict:
 
 def _resample_frames(video: torch.Tensor, target_frames: int) -> torch.Tensor:
     """Uniformly sample target_frames from video [F,H,W,C].
-    
+
     Uses evenly-spaced index selection (no interpolation).
     Works for both downsample (60→24) and upsample (rare).
     """
@@ -157,6 +163,112 @@ def _resample_frames(video: torch.Tensor, target_frames: int) -> torch.Tensor:
         return video[:target_frames] if target_frames < src_f else video
     indices = torch.linspace(0, src_f - 1, target_frames).long()
     return video[indices].contiguous()
+
+
+def _atempo_filter(speed: float) -> str:
+    """atempo filter chain for 0 < speed <= 1.
+
+    atempo only accepts factors of 0.5 and above, so slower targets are split
+    into several stages whose product is the requested speed (custom 0.1x ->
+    0.5 * 0.5 * 0.5 * 0.8).
+    """
+    stages = []
+    factor = float(speed)
+    while factor < 0.5:
+        stages.append(0.5)
+        factor /= 0.5
+    stages.append(factor)
+    return ",".join("atempo=%.6f" % stage for stage in stages)
+
+
+def _slowdown_audio(audio, speed: float):
+    """Time-stretch an AUDIO dict to the slowed timeline, keeping its pitch.
+
+    Uses ffmpeg's atempo (WSOLA time-stretch) over raw float32 PCM. That is the
+    same pitch-preserving algorithm the Long Builder runs in reverse
+    (atempo=1/speed) when it restores the merged film, so a reference audio
+    slowed here comes back to its original tempo and pitch there. Resampling the
+    waveform samples - what this helper used to do - drops the pitch (tape
+    slowdown) and no restore pass can undo that.
+
+    Accepts the same shapes _slice_audio handles; returns a plain dict or the
+    original input when it has no waveform (None-in, None-out).
+    """
+    if audio is None:
+        return None
+    if isinstance(audio, dict):
+        audio_data = audio
+    elif hasattr(audio, '_dict'):
+        audio_data = audio._dict
+    else:
+        waveform, sample_rate = audio[0], audio[1]
+        audio_data = {"waveform": waveform, "sample_rate": sample_rate}
+    waveform = audio_data.get("waveform")
+    sample_rate = int(audio_data.get("sample_rate", 44100))
+    if waveform is None:
+        return audio
+    samples = int(waveform.shape[-1])
+    if samples == 0 or speed >= 1.0:
+        return audio
+    if waveform.ndim == 2:
+        work = waveform.unsqueeze(0)
+    elif waveform.ndim == 3:
+        work = waveform
+    else:
+        # Unexpected layout: leave the audio alone rather than guess; the
+        # slowdown log names the mismatch so it cannot pass silently.
+        print(f"[H3 playback] WARNING: audio waveform shape {list(waveform.shape)} "
+              f"not understood; audio left at the original tempo.")
+        return audio
+
+    channels = int(work.shape[1])
+    target_samples = max(1, int(round(samples / float(speed))))
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise ValueError(
+            "H3 音频变速: 找不到 ffmpeg，无法做变速不变调（atempo）。"
+            "请确认 ffmpeg 在 PATH 中；已拒绝用有损重采样代替。"
+        )
+    filter_chain = _atempo_filter(speed)
+    command = [
+        ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-f", "f32le", "-ar", str(sample_rate), "-ac", str(channels), "-i", "pipe:0",
+        "-filter:a", filter_chain,
+        "-f", "f32le", "-ar", str(sample_rate), "-ac", str(channels), "pipe:1",
+    ]
+
+    batches = []
+    for batch in work.to(torch.float32).cpu():
+        pcm = batch.transpose(0, 1).contiguous().numpy().astype("<f4", copy=False).tobytes()
+        try:
+            proc = subprocess.run(command, input=pcm, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, timeout=3600)
+        except subprocess.TimeoutExpired:
+            raise ValueError("H3 音频变速: atempo 处理超时，未产出结果。")
+        if proc.returncode != 0 or not proc.stdout:
+            tail = (proc.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-8:]
+            raise ValueError("H3 音频变速: atempo 失败（退出码 %s）：%s"
+                             % (proc.returncode, " | ".join(tail) or "ffmpeg 没有输出错误信息"))
+        output = np.frombuffer(proc.stdout, dtype="<f4")
+        if output.size % channels:
+            raise ValueError("H3 音频变速: atempo 输出的 PCM 长度不是声道数的整数倍，"
+                             "无法还原音频张量形状。")
+        batches.append(torch.from_numpy(output.reshape(-1, channels).T.copy()))
+
+    stretched = torch.stack(batches, dim=0)
+    # Same duration rule as the slowed video: round(source / speed). atempo's
+    # own output length is approximate, so trim or pad the tail to match.
+    if stretched.shape[-1] > target_samples:
+        stretched = stretched[..., :target_samples]
+    elif stretched.shape[-1] < target_samples:
+        stretched = torch.nn.functional.pad(
+            stretched, (0, target_samples - stretched.shape[-1])
+        )
+    if waveform.ndim == 2:
+        stretched = stretched.squeeze(0)
+    print(f"[H3 playback] audio: atempo time-stretch {speed}x "
+          f"({samples} -> {stretched.shape[-1]} samples @ {sample_rate} Hz, pitch kept)")
+    return {"waveform": stretched.contiguous(), "sample_rate": sample_rate}
 
 
 class H3LongVideoManager(io.ComfyNode):
@@ -203,6 +315,13 @@ class H3LongVideoManager(io.ComfyNode):
                 io.Int.Input('person_crop_expand_percent', optional=True, default=0, min=0, max=100, step=1, tooltip='人物框外扩百分比，0 为紧贴检测框（仍保持原画面比例）'),
                 io.Combo.Input('save_dtype', options=['int8', 'fp16'], optional=True, default='int8',
                     tooltip='素材存盘精度：int8 体积只有 fp16 的一半（源视频本身是 8-bit，读回后画质一致）；fp16 是旧格式，需要保留原始浮点张量时再选'),
+                # Appended last on purpose (same rule as the Picker's tail fields):
+                # configure() restores widget values by position, so a workflow
+                # saved before this field existed keeps every older value.
+                io.Combo.Input('playback_speed', options=list(PLAYBACK_SPEED_OPTIONS), default='1.0x',
+                    tooltip='参考视频慢放倍率：在切分之前把整条视频放慢（帧复制，不插帧），之后所有分段、22 帧 Motion Context 都在慢放后的时间轴上计算。1.0x = 原有行为。合并时请在 Long Builder 里选择相同倍率恢复原速'),
+                io.Float.Input('playback_speed_custom', optional=True, default=1.0, min=0.1, max=1.0, step=0.1,
+                    tooltip='只在播放速度选 custom 时生效：0~1.0 之间的一位小数（如 0.6），表示慢放到原速的 60%'),
             ],
             outputs=[
                 io.Image.Output(display_name='IMAGE'),
@@ -218,42 +337,82 @@ class H3LongVideoManager(io.ComfyNode):
                 audio=None, scale_percent=100.0, align_to_h3_grid=True,
                 project_name=DEFAULT_PROJECT, save_enabled=True, save_preview_mp4=False,
                 final_align="down", person_crop=False, person_crop_expand_percent=0,
-                save_dtype="int8"):
+                save_dtype="int8", playback_speed="1.0x", playback_speed_custom=1.0):
         # final_align is accepted but ignored: it only exists so graphs saved
         # before the automatic tail policy keep their widget positions.
         del final_align
         if not isinstance(video, torch.Tensor):
             raise TypeError(f"Expected IMAGE tensor [F,H,W,C], got {type(video).__name__}")
 
+        speed = parse_playback_speed(playback_speed, playback_speed_custom)
         fps = int(fps)
         source_frames = int(video.shape[0])
         source_duration_sec = source_frames / float(fps)
-        expand_percent = max(0, min(100, int(person_crop_expand_percent)))
+        try:
+            expand_percent = max(0, min(100, int(person_crop_expand_percent)))
+        except (TypeError, ValueError):
+            # Workflows saved before a widget was inserted land its value on the
+            # wrong slot; the web extension fixes that on load, but a raw API
+            # queue of an old workflow would still send it through. Fall back to
+            # the default rather than crash.
+            print(f"[H3 LVM] WARNING: person_crop_expand_percent 收到无法解析的值 "
+                  f"{person_crop_expand_percent!r}，已按 0 处理（旧工作流按位置恢复控件可能错位，"
+                  "在前端重新加载并保存一次工作流即可修正）。")
+            expand_percent = 0
         work_video = resample_video(video, fps, TARGET_FPS)
         if person_crop:
             work_video, _crop_rect = crop_video_to_person(
                 work_video, expand_percent=expand_percent
             )
 
+        # Playback speed runs BEFORE segmentation, on the conformed 24 fps
+        # timeline: every segment table, duration and the 22-frame Motion
+        # Context below are computed on the slowed frames. 1.0x skips this
+        # block entirely so the historical behaviour is untouched.
+        slowed_audio = audio
+        if speed < 1.0:
+            conformed_frames = int(work_video.shape[0])
+            work_video = slowdown_video(work_video, speed)
+            slowed_audio = _slowdown_audio(audio, speed)
+            print(f"[H3 LVM] playback speed: {speed}x slow-motion, frame sampling "
+                  f"(no interpolation): {conformed_frames} frames @ {TARGET_FPS}fps -> "
+                  f"{int(work_video.shape[0])} frames @ {TARGET_FPS}fps, "
+                  f"duration {conformed_frames / TARGET_FPS:.2f}s -> "
+                  f"{work_video.shape[0] / TARGET_FPS:.2f}s")
+
         total_frames = int(work_video.shape[0])
         src_h, src_w = work_video.shape[1], work_video.shape[2]
         print(f"[H3 LVM] input video: {source_frames} frames, {src_w}x{src_h}, "
               f"fps={fps}, duration={source_duration_sec:.2f}s")
         if source_frames != total_frames:
-            print(f"[H3 LVM] frame-rate conform: {source_frames} frames @ {fps}fps -> "
-                  f"{total_frames} frames @ {TARGET_FPS}fps (same wall-clock duration)")
-        if audio is not None:
-            wf = audio.get("waveform") if isinstance(audio, dict) else None
-            sr = audio.get("sample_rate", 44100) if isinstance(audio, dict) else 44100
+            if speed < 1.0:
+                print(f"[H3 LVM] frame-rate conform: {source_frames} frames @ {fps}fps -> "
+                      f"{total_frames} frames @ {TARGET_FPS}fps (slowed timeline)")
+            else:
+                print(f"[H3 LVM] frame-rate conform: {source_frames} frames @ {fps}fps -> "
+                      f"{total_frames} frames @ {TARGET_FPS}fps (same wall-clock duration)")
+        if slowed_audio is not None:
+            wf = slowed_audio.get("waveform") if isinstance(slowed_audio, dict) else None
+            sr = slowed_audio.get("sample_rate", 44100) if isinstance(slowed_audio, dict) else 44100
             if wf is not None:
                 print(f"[H3 LVM] input audio: waveform shape={list(wf.shape)}, sample_rate={sr}")
 
         # --- Build manifest ---
-        source_info = SourceVideoInfo(
-            file_path="input", width=src_w, height=src_h,
-            fps=fps, frame_count=source_frames,
-            duration_seconds=source_duration_sec,
-        )
+        if speed < 1.0:
+            # The working timeline IS the slowed one, so the manifest is built
+            # from the slowed frame count; every segment range below is an
+            # index into work_video as it exists right now.
+            source_info = SourceVideoInfo(
+                file_path="input", width=src_w, height=src_h,
+                fps=TARGET_FPS, frame_count=total_frames,
+                duration_seconds=total_frames / float(TARGET_FPS),
+            )
+        else:
+            source_info = SourceVideoInfo(
+                file_path="input", width=src_w, height=src_h,
+                fps=fps, frame_count=source_frames,
+                duration_seconds=source_duration_sec,
+            )
 
         working_config = WorkingVideoConfig(
             target_fps=TARGET_FPS,
@@ -342,7 +501,7 @@ class H3LongVideoManager(io.ComfyNode):
                         seg_video = _pad_black_frames(seg_video, expected_f)
 
                     # Slice audio
-                    seg_audio, seg_waveform, seg_sr = _slice_audio(audio, src_start, src_end, src_fps)
+                    seg_audio, seg_waveform, seg_sr = _slice_audio(slowed_audio, src_start, src_end, src_fps)
                     # Pad audio with silence if needed
                     if seg_audio is not None and seg_waveform is not None:
                         expected_samples = int(expected_f / src_fps * seg_sr)
@@ -369,6 +528,7 @@ class H3LongVideoManager(io.ComfyNode):
                             "main_end": seg.main_end_frame,
                             "main_frames": seg.main_frame_count,
                             "context_frames": seg.context_length,
+                            "playback_speed": speed,
                         },
                     )
                     saved_ids.append(seg_id_1based)
@@ -380,6 +540,24 @@ class H3LongVideoManager(io.ComfyNode):
 
             print(f"[H3 LVM] save complete: {total_segments} segments → '{project}' "
                   f"(素材精度 {normalize_save_dtype(save_dtype)})")
+            # Project-level playback metadata: the Long Builder reads this to
+            # restore the original speed after joining, so the factor never has
+            # to be retyped (and mis-typed) at merge time. Written on every save
+            # run, 1.0x included, so a re-cut at original speed replaces stale
+            # slow-motion metadata instead of leaving it behind.
+            set_project_playback_meta(project, {
+                "playback_speed": speed,
+                "speed_option": str(playback_speed),
+                "source_fps": int(fps),
+                "working_fps": int(TARGET_FPS),
+                "source_frames": int(source_frames),
+                "source_duration_sec": round(source_duration_sec, 4),
+                "processed_frames": int(total_frames),
+                "processed_duration_sec": round(total_frames / float(TARGET_FPS), 4),
+                "motion_context_frames": int(motion_context_frames),
+                "segment_duration_sec": float(segment_duration),
+                "align_to_h3_grid": bool(align_to_h3_grid),
+            })
             # Refresh other Picker nodes even if a downstream node later fails.
             import server
             prompt_server = getattr(server.PromptServer, "instance", None)
@@ -424,7 +602,7 @@ class H3LongVideoManager(io.ComfyNode):
         print(f"[H3 LVM] output video: {final_frame_count} frames, {result_video.shape[2]}x{result_video.shape[1]}")
 
         # Slice audio
-        result_audio, _, _ = _slice_audio(audio, src_start, src_end, src_fps)
+        result_audio, _, _ = _slice_audio(slowed_audio, src_start, src_end, src_fps)
         # Pad audio with silence if needed
         if result_audio is not None and result_audio.get("waveform") is not None:
             expected_samples = int(expected_f / src_fps * result_audio["sample_rate"])
@@ -647,6 +825,13 @@ class H3SmartSplit(io.ComfyNode):
                 io.Boolean.Input('save_preview_mp4', optional=True, default=False),
                 io.Combo.Input('save_dtype', options=['int8', 'fp16'], optional=True, default='int8',
                     tooltip='素材存盘精度：int8 体积只有 fp16 的一半（源视频本身是 8-bit，读回后画质一致）；fp16 是旧格式，需要保留原始浮点张量时再选'),
+                # Appended last on purpose (same rule as the Manager's tail fields):
+                # configure() restores widget values by position, so a workflow
+                # saved before this pair keeps every older value.
+                io.Combo.Input('playback_speed', options=list(PLAYBACK_SPEED_OPTIONS), default='1.0x',
+                    tooltip='参考视频慢放倍率：在镜头检测与切分之前把整条视频放慢（帧复制，不插帧），之后所有镜头切点、Motion Context 与保存片段都在慢放后的时间轴上计算。1.0x = 原有行为。合并时请在 Long Builder 里选择相同倍率恢复原速'),
+                io.Float.Input('playback_speed_custom', optional=True, default=1.0, min=0.1, max=1.0, step=0.1,
+                    tooltip='只在播放速度选 custom 时生效：0~1.0 之间的一位小数（如 0.6），表示慢放到原速的 60%'),
             ],
             outputs=[
                 io.Image.Output(display_name='IMAGE'),
@@ -659,7 +844,8 @@ class H3SmartSplit(io.ComfyNode):
     @classmethod
     def execute(cls, video, fps, detection_sensitivity, motion_context_frames, segment_id,
                 audio=None, scale_percent=100.0, project_name=DEFAULT_PROJECT,
-                save_enabled=True, save_preview_mp4=False, save_dtype="int8"):
+                save_enabled=True, save_preview_mp4=False, save_dtype="int8",
+                playback_speed="1.0x", playback_speed_custom=1.0):
         if not isinstance(video, torch.Tensor):
             raise TypeError(f"Expected IMAGE tensor [F,H,W,C], got {type(video).__name__}")
         if video.ndim != 4:
@@ -667,14 +853,35 @@ class H3SmartSplit(io.ComfyNode):
 
         fps = int(fps)
         source_frames = int(video.shape[0])
+        source_duration_sec = source_frames / float(fps)
+        speed = parse_playback_speed(playback_speed, playback_speed_custom)
         work_video = resample_video(video, fps, TARGET_FPS)
+        conformed_frames = int(work_video.shape[0])
+
+        # Playback speed runs BEFORE scene detection, so every cut, Motion
+        # Context range and saved segment below is an index into the slowed
+        # timeline. 1.0x skips this block entirely.
+        slowed_audio = audio
+        if speed < 1.0:
+            work_video = slowdown_video(work_video, speed)
+            slowed_audio = _slowdown_audio(audio, speed)
+            print(f"[H3 Smart Split] playback speed: {speed}x slow-motion, frame sampling "
+                  f"(no interpolation): {conformed_frames} frames @ {TARGET_FPS}fps -> "
+                  f"{int(work_video.shape[0])} frames @ {TARGET_FPS}fps, "
+                  f"duration {conformed_frames / TARGET_FPS:.2f}s -> "
+                  f"{work_video.shape[0] / TARGET_FPS:.2f}s")
+
         total_frames = int(work_video.shape[0])
         src_h, src_w = int(work_video.shape[1]), int(work_video.shape[2])
         print(f"[H3 Smart Split] input video: {source_frames} frames, {src_w}x{src_h}, "
-              f"fps={fps}, duration={source_frames / float(fps):.2f}s")
+              f"fps={fps}, duration={source_duration_sec:.2f}s")
         if source_frames != total_frames:
-            print(f"[H3 Smart Split] frame-rate conform: {source_frames} frames @ {fps}fps -> "
-                  f"{total_frames} frames @ {TARGET_FPS}fps (same wall-clock duration)")
+            if speed < 1.0:
+                print(f"[H3 Smart Split] frame-rate conform: {source_frames} frames @ {fps}fps -> "
+                      f"{total_frames} frames @ {TARGET_FPS}fps (slowed timeline)")
+            else:
+                print(f"[H3 Smart Split] frame-rate conform: {source_frames} frames @ {fps}fps -> "
+                      f"{total_frames} frames @ {TARGET_FPS}fps (same wall-clock duration)")
         if total_frames <= 0:
             raise ValueError("H3 Smart Split: 输入视频没有帧，无法检测镜头。")
 
@@ -730,7 +937,7 @@ class H3SmartSplit(io.ComfyNode):
             seg_video = _slice_and_scale(work_video, start, end,
                                         target_w if need_scale else None,
                                         target_h if need_scale else None)
-            seg_audio, waveform, sr = _slice_audio(audio, start, end, float(TARGET_FPS))
+            seg_audio, waveform, sr = _slice_audio(slowed_audio, start, end, float(TARGET_FPS))
             if seg_audio is not None and waveform is not None:
                 expected_samples = int((end - start) / float(TARGET_FPS) * sr)
                 if waveform.shape[-1] < expected_samples:
@@ -778,6 +985,7 @@ class H3SmartSplit(io.ComfyNode):
                             "main_end": seg["main_end"],
                             "main_frames": seg["main_frames"],
                             "context_frames": seg["context_frames"],
+                            "playback_speed": speed,
                             "segmentation_method": "smart",
                             "scene_id": seg["scene_id"],
                         },
@@ -790,6 +998,20 @@ class H3SmartSplit(io.ComfyNode):
                     ) from e
             print(f"[H3 Smart Split] save complete: {total_segments} segments -> '{project}' "
                   f"(素材精度 {normalize_save_dtype(save_dtype)})")
+            # Same project-level playback block the Manager writes, so the Long
+            # Builder can restore the speed without the user retyping it.
+            set_project_playback_meta(project, {
+                "playback_speed": speed,
+                "speed_option": str(playback_speed),
+                "source_fps": int(fps),
+                "working_fps": int(TARGET_FPS),
+                "source_frames": int(source_frames),
+                "source_duration_sec": round(source_duration_sec, 4),
+                "processed_frames": int(total_frames),
+                "processed_duration_sec": round(total_frames / float(TARGET_FPS), 4),
+                "motion_context_frames": int(motion_context_frames),
+                "segmentation_method": "smart",
+            })
             import server
             prompt_server = getattr(server.PromptServer, "instance", None)
             if prompt_server is not None:
