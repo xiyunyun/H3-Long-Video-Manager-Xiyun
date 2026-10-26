@@ -3,6 +3,14 @@
 > 版本铁规：每次改动前，把旧版本完整快照存入 `archive/<日期>-<commit 短 hash>/`，并在本文件顶部追加一条说明。
 > 只有用户的明确命令才能删改 `archive/` 中的旧版本。
 
+## 2026-10-27 · 与原版二选一共存守卫与目录改名（已提交并推送 main）
+
+- 本仓库本地目录已由 `H3-Long-Video-Manager` 改名为 `H3-Long-Video-Manager-Xiyun`，与 GitHub fork 仓库名一致；只改文件夹名，不改 Python 包内容、节点 ID 或工作流数据。
+- 新增 `fork_guard.py`：按内容检测同一 `custom_nodes` 目录下的另一份 H3 Long Video Manager（识别 `comfyui/nodes.py` 里的 `node_id='H3 Long Video Manager'`），不依赖文件夹名；`.disabled` 目录忽略。
+- 检测到另一份时，熙云版不注册节点、不注册 `/h3_lvm/*` 路由，并把 `WEB_DIRECTORY` 设为 `None`，避免同名节点、API 与前端扩展互相覆盖；启动日志给出检测路径和切换方法。
+- 切换方法：要用熙云版，就禁用或改名另一份（例如 `H3-Long-Video-Manager.disabled`）后重启 ComfyUI；要临时强制两份同时加载，设置 `H3_XYIYUN_ALLOW_DUPLICATE=1`（不推荐，同名节点仍会覆盖）。
+- 验证：fork guard 5 个用例 + schema / playback / Smart Split 专项共 **45/45 通过**；真实 ComfyUI 切换由用户验收。
+
 ## 2026-10-27 · 参考视频慢放：Manager / Smart Split（已提交并推送 main）
 
 - 两个切分节点末尾新增 `playback_speed`（`1.0x` / `0.75x` / `0.5x` / `custom`）与 `playback_speed_custom`。字段只追加在输入末尾，原有输入顺序与旧工作流保存值不变；`1.0x` 时切分、镜头检测和输出与修改前完全一致。
