@@ -3,6 +3,16 @@
 > 版本铁规：每次改动前，把旧版本完整快照存入 `archive/<日期>-<commit 短 hash>/`，并在本文件顶部追加一条说明。
 > 只有用户的明确命令才能删改 `archive/` 中的旧版本。
 
+## 2026-10-27 · 参考视频慢放：Manager / Smart Split（已提交并推送 main）
+
+- 两个切分节点末尾新增 `playback_speed`（`1.0x` / `0.75x` / `0.5x` / `custom`）与 `playback_speed_custom`。字段只追加在输入末尾，原有输入顺序与旧工作流保存值不变；`1.0x` 时切分、镜头检测和输出与修改前完全一致。
+- 慢放发生在切分之前：视频按最近时间帧复制（不插帧，输出仍为 24 fps），之后的分段、镜头切点、22 帧 Motion Context、保存范围和音频切片全部基于慢放后的时间轴。
+- 音频改用 ffmpeg `atempo` 做变速不变调（WSOLA），与 Long Builder 合并端的恢复算法互为逆运算；找不到 ffmpeg 时明确报错，不回退到有损重采样。
+- 项目索引新增 `playback` 元数据（倍率、源/处理后帧数与时长、Motion Context 等）。H3 Smart Split 也写入同样的块，Long Builder 可按同名项目自动恢复倍率。
+- 中文显示：`参考视频慢放倍率` / `自定义慢放倍率`，下拉选项同步中文化；字段名和存盘值仍为英文，旧工作流兼容。
+- 验证：schema / Smart Split / playback 专项 **40/40 通过**，包含新增的「慢放必须先于镜头检测」契约；ComfyUI 实机成片由用户验收。
+- 功能提交 `6d21712`，已推送 `xiyun/main`；本轮只补写 VERSION.md，不创建 tag，也未新建 `archive/` 快照。
+
 ## 2026-10-26 · Manager / Smart Split 卡片删除与合并重叠审计（未提交）
 
 - 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-26-9e46f9d-card-delete` 保存基线 `9e46f9d` 的 108 个仓库文件，逐文件 Git 哈希 `mismatch: 0`；开发副本与发布副本的 108 个源码、文档和测试文件也一致。
