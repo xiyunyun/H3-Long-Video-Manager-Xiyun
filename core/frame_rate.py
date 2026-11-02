@@ -1,5 +1,7 @@
 """Constant-frame-rate conversion and playback-speed remapping for IMAGE timelines."""
 
+import math
+
 import torch
 
 #: Widget options shared by the producers; "custom" reads its number from a
@@ -66,6 +68,38 @@ def slowdown_video(video: torch.Tensor, speed: float) -> torch.Tensor:
     indices = torch.floor(positions * float(speed) + 0.5).long()
     indices = indices.clamp_(0, source_frames - 1)
     return video[indices].contiguous()
+
+
+def iter_slowed_frames(frames, speed: float, stats=None):
+    """Apply slowdown_video's nearest-neighbour mapping to a lazy frame iterable."""
+    if not (0 < speed <= 1):
+        raise ValueError("speed must be in (0, 1]")
+    source_count = 0
+    output_count = 0
+    last_frame = None
+    try:
+        if speed == 1.0:
+            for frame in frames:
+                source_count += 1
+                output_count += 1
+                yield frame
+            return
+        for source_index, frame in enumerate(frames):
+            source_count += 1
+            last_frame = frame
+            while math.floor(output_count * float(speed) + 0.5) == source_index:
+                output_count += 1
+                yield frame
+        target_frames = slowdown_frame_count(source_count, speed)
+        while output_count < target_frames:
+            output_count += 1
+            yield last_frame
+    finally:
+        if stats is not None:
+            stats.update({
+                "source_frames": source_count,
+                "processed_frames": output_count,
+            })
 
 
 def converted_frame_count(source_frames: int, source_fps: float, target_fps: int = 24) -> int:

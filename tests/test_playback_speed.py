@@ -18,6 +18,7 @@ import torch
 
 from core.frame_rate import (
     PLAYBACK_SPEED_OPTIONS,
+    iter_slowed_frames,
     parse_playback_speed,
     slowdown_frame_count,
     slowdown_video,
@@ -92,6 +93,36 @@ class TestSlowdownMath(unittest.TestCase):
     def test_original_speed_is_a_passthrough(self):
         source = _identity_video(24)
         self.assertIs(slowdown_video(source, 1.0), source)
+
+
+class TestStreamingSlowdownMath(unittest.TestCase):
+    def test_lazy_stream_matches_tensor_mapping_exactly(self):
+        for frames in (1, 2, 8, 24, 25):
+            for speed in (0.5, 0.6, 0.75, 1.0):
+                with self.subTest(frames=frames, speed=speed):
+                    source = _identity_video(frames)
+                    expected = slowdown_video(source, speed)
+                    stats = {}
+                    actual = torch.stack(list(iter_slowed_frames(
+                        list(source), speed, stats=stats)))
+                    self.assertTrue(torch.equal(actual, expected))
+                    self.assertEqual(stats, {
+                        "source_frames": frames,
+                        "processed_frames": int(expected.shape[0]),
+                    })
+
+    def test_stream_stays_lazy_while_producing_frames(self):
+        consumed = []
+
+        def source():
+            for index in range(100):
+                consumed.append(index)
+                yield index
+
+        stream = iter_slowed_frames(source(), 0.5)
+        self.assertEqual([next(stream) for _ in range(3)], [0, 1, 1])
+        self.assertEqual(consumed, [0, 1])
+        stream.close()
 
 
 @unittest.skipIf(NODES is None, "comfy_api unavailable")

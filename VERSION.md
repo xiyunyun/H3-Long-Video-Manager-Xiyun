@@ -3,13 +3,35 @@
 > 版本铁规：每次改动前，把旧版本完整快照存入 `archive/<日期>-<commit 短 hash>/`，并在本文件顶部追加一条说明。
 > 只有用户的明确命令才能删改 `archive/` 中的旧版本。
 
-## 2026-10-27 · 与原版二选一共存守卫与目录改名（已提交并推送 main）
+## 2026-11-02 · 合并上游 89dc585 并保留熙云共存守卫（已验证）
 
-- 本仓库本地目录已由 `H3-Long-Video-Manager` 改名为 `H3-Long-Video-Manager-Xiyun`，与 GitHub fork 仓库名一致；只改文件夹名，不改 Python 包内容、节点 ID 或工作流数据。
-- 新增 `fork_guard.py`：按内容检测同一 `custom_nodes` 目录下的另一份 H3 Long Video Manager（识别 `comfyui/nodes.py` 里的 `node_id='H3 Long Video Manager'`），不依赖文件夹名；`.disabled` 目录忽略。
-- 检测到另一份时，熙云版不注册节点、不注册 `/h3_lvm/*` 路由，并把 `WEB_DIRECTORY` 设为 `None`，避免同名节点、API 与前端扩展互相覆盖；启动日志给出检测路径和切换方法。
-- 切换方法：要用熙云版，就禁用或改名另一份（例如 `H3-Long-Video-Manager.disabled`）后重启 ComfyUI；要临时强制两份同时加载，设置 `H3_XYIYUN_ALLOW_DUPLICATE=1`（不推荐，同名节点仍会覆盖）。
-- 验证：fork guard 5 个用例 + schema / playback / Smart Split 专项共 **45/45 通过**；真实 ComfyUI 切换由用户验收。
+- 合并上游 `89dc585 feat: refine segment playback and standalone production`：包含慢放、参数面板、缩放预设、独立输出、v2 同步与 `playback_audio.py`。
+- 冲突解决：`comfyui/nodes.py`、`core/frame_rate.py`、`tests/test_playback_speed.py` 采用上游超集；`VERSION.md` 合并；`segment_store.py`、`test_node_schema.py`、`web/extension.js` 自动合并。
+- 保留熙云版独有内容：`fork_guard.py`、`__init__.py` 的共存守卫、`tests/test_fork_guard.py`、根目录共存提示 txt。
+- 守卫行为：检测到另一份 H3 Long Video Manager 时，熙云版不注册节点、不注册 `/h3_lvm/*` 路由并跳过前端加载；要使用熙云版需禁用或改名另一份后重启 ComfyUI。
+- 验证：完整 Python **691/691 通过**；重点套件（守卫 / schema / playback / Smart Split / stream / merge）**80/80 通过**；参数面板 **8/8 通过**；全部 `web/*.js` 语法检查通过。ComfyUI 实机由用户验收。
+
+## 2026-10-27 · 裁切节点独立运行与隐藏片段编号（已验收）
+
+- 快照：`archive/2026-10-27-fccb9a0-standalone-producers/` 保存本轮修改前的 115 个源码、文档和测试文件。
+- H3 Long Video Manager 与 H3 Smart Split 旧版补设 `is_output_node=True`；两个 v2 原本已如此。四个裁切节点现在都能作为流程末端直接运行并写入素材库，不必再连接预览或其他下游节点。
+- 「输出片段编号」从四个节点的参数面板移除，`segment_id` 转为隐藏兼容字段。节点 ID、输入顺序和原有四个输出接口保持不动，旧工作流已经连接的输出不会断线；新工作流无需使用这些输出。H3 Segment Picker 不在本次修改范围内。
+- 自动验证：Python 裁切、帧率、流式节点、schema 与合并专项 **73/73 通过**；发布前相关 Python 复验 **111/111 通过**，参数面板 **8/8 通过**，24 个 `web/*.js` 语法检查无失败。用户已在 ComfyUI 中确认本次更新。
+
+## 2026-10-27 · 画面缩放预设与 custom（待用户复测）
+
+- 快照：`archive/2026-10-27-fccb9a0-scale-presets/` 保存本轮修改前的 115 个源码、文档和测试文件。
+- H3 Long Video Manager、H3 Smart Split 及各自 v2 的「画面处理」共用新的预设数字控件：`100% / 75% / 50% / 25% / custom`；custom 保留原来的 10–100%、步进 1%。
+- 控件只负责选择并写回原有 `scale_percent`，不新增节点输入、不改变输入顺序、缓存键或后端缩放逻辑；旧工作流中的数值仍按原样读取，非预设数值自动显示为 custom。
+- 自动验证：参数面板 **8/8 通过**，24 个 `web/*.js` 语法检查无失败，`comfyui/` 与 `core/` 后端源码相对快照差异为 0。预设控件的实际观感和鼠标交互由用户在 ComfyUI 中验收。
+
+## 2026-10-27 · Xiyun 优化同步回原版运行副本（待用户复测）
+
+- 快照：`archive/2026-10-27-2292926-pre-xiyun-sync/` 保存切换前原版运行备份的 108 个源码、文档和测试文件。
+- 功能来源：本地 Xiyun `main` 的 `fccb9a0` 及与其当前运行副本逐文件一致的工作树，接收慢放、参数分区界面、Manager / Smart Split v2 同步和后续音频与帧率修复。
+- 不接收 Xiyun 专用的 `fork_guard.py`、共存提示、专用测试和加载分支；保留原版 `__init__.py` 的直接注册方式、全部节点 ID、API 路由、项目存储结构和工作流数据。
+- 本轮只整理并同步 ComfyUI 本地运行副本，不提交、不推送、不创建 tag。部署后禁用 Xiyun、启用原版；Python 已变化，必须重启 ComfyUI 后复测。
+- 自动验证：慢放、帧率、流式节点、schema 与合并专项 **73/73 通过**；参数面板 **7/7 通过**；24 个 `web/*.js` 语法检查无失败。切换前后均可导入并注册 11 个节点，部署后暂存副本与正式原版目录的 223 个文件哈希完全一致。真实界面、项目数据和生成结果仍由用户重启后验收。
 
 ## 2026-10-27 · 参考视频慢放：Manager / Smart Split（已提交并推送 main）
 

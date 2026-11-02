@@ -12,10 +12,7 @@ from comfy_api.latest import io
 
 import logging
 import os
-import shutil
-import subprocess
 
-import numpy as np
 import torch
 
 from ..core.models import MotionContextConfig, MOTION_CONTEXT_OPTIONS, SourceVideoInfo, WorkingVideoConfig
@@ -48,6 +45,7 @@ from .ref_nodes import H3AudioReferenceLoader, H3ImageReferenceLoader
 from .guide_nodes import H3GuideTimeline, H3GuideTimelineV2, H3GuideTimelineV2B
 from .video_loader_node import H3VideoLoader
 from .stream_nodes import H3LongVideoManagerV2, H3SmartSplitV2
+from .playback_audio import _slowdown_audio
 
 logger = logging.getLogger(__name__)
 CORE_AVAILABLE = True
@@ -165,112 +163,6 @@ def _resample_frames(video: torch.Tensor, target_frames: int) -> torch.Tensor:
     return video[indices].contiguous()
 
 
-def _atempo_filter(speed: float) -> str:
-    """atempo filter chain for 0 < speed <= 1.
-
-    atempo only accepts factors of 0.5 and above, so slower targets are split
-    into several stages whose product is the requested speed (custom 0.1x ->
-    0.5 * 0.5 * 0.5 * 0.8).
-    """
-    stages = []
-    factor = float(speed)
-    while factor < 0.5:
-        stages.append(0.5)
-        factor /= 0.5
-    stages.append(factor)
-    return ",".join("atempo=%.6f" % stage for stage in stages)
-
-
-def _slowdown_audio(audio, speed: float):
-    """Time-stretch an AUDIO dict to the slowed timeline, keeping its pitch.
-
-    Uses ffmpeg's atempo (WSOLA time-stretch) over raw float32 PCM. That is the
-    same pitch-preserving algorithm the Long Builder runs in reverse
-    (atempo=1/speed) when it restores the merged film, so a reference audio
-    slowed here comes back to its original tempo and pitch there. Resampling the
-    waveform samples - what this helper used to do - drops the pitch (tape
-    slowdown) and no restore pass can undo that.
-
-    Accepts the same shapes _slice_audio handles; returns a plain dict or the
-    original input when it has no waveform (None-in, None-out).
-    """
-    if audio is None:
-        return None
-    if isinstance(audio, dict):
-        audio_data = audio
-    elif hasattr(audio, '_dict'):
-        audio_data = audio._dict
-    else:
-        waveform, sample_rate = audio[0], audio[1]
-        audio_data = {"waveform": waveform, "sample_rate": sample_rate}
-    waveform = audio_data.get("waveform")
-    sample_rate = int(audio_data.get("sample_rate", 44100))
-    if waveform is None:
-        return audio
-    samples = int(waveform.shape[-1])
-    if samples == 0 or speed >= 1.0:
-        return audio
-    if waveform.ndim == 2:
-        work = waveform.unsqueeze(0)
-    elif waveform.ndim == 3:
-        work = waveform
-    else:
-        # Unexpected layout: leave the audio alone rather than guess; the
-        # slowdown log names the mismatch so it cannot pass silently.
-        print(f"[H3 playback] WARNING: audio waveform shape {list(waveform.shape)} "
-              f"not understood; audio left at the original tempo.")
-        return audio
-
-    channels = int(work.shape[1])
-    target_samples = max(1, int(round(samples / float(speed))))
-    ffmpeg_bin = shutil.which("ffmpeg")
-    if not ffmpeg_bin:
-        raise ValueError(
-            "H3 音频变速: 找不到 ffmpeg，无法做变速不变调（atempo）。"
-            "请确认 ffmpeg 在 PATH 中；已拒绝用有损重采样代替。"
-        )
-    filter_chain = _atempo_filter(speed)
-    command = [
-        ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-nostdin",
-        "-f", "f32le", "-ar", str(sample_rate), "-ac", str(channels), "-i", "pipe:0",
-        "-filter:a", filter_chain,
-        "-f", "f32le", "-ar", str(sample_rate), "-ac", str(channels), "pipe:1",
-    ]
-
-    batches = []
-    for batch in work.to(torch.float32).cpu():
-        pcm = batch.transpose(0, 1).contiguous().numpy().astype("<f4", copy=False).tobytes()
-        try:
-            proc = subprocess.run(command, input=pcm, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE, timeout=3600)
-        except subprocess.TimeoutExpired:
-            raise ValueError("H3 音频变速: atempo 处理超时，未产出结果。")
-        if proc.returncode != 0 or not proc.stdout:
-            tail = (proc.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-8:]
-            raise ValueError("H3 音频变速: atempo 失败（退出码 %s）：%s"
-                             % (proc.returncode, " | ".join(tail) or "ffmpeg 没有输出错误信息"))
-        output = np.frombuffer(proc.stdout, dtype="<f4")
-        if output.size % channels:
-            raise ValueError("H3 音频变速: atempo 输出的 PCM 长度不是声道数的整数倍，"
-                             "无法还原音频张量形状。")
-        batches.append(torch.from_numpy(output.reshape(-1, channels).T.copy()))
-
-    stretched = torch.stack(batches, dim=0)
-    # Same duration rule as the slowed video: round(source / speed). atempo's
-    # own output length is approximate, so trim or pad the tail to match.
-    if stretched.shape[-1] > target_samples:
-        stretched = stretched[..., :target_samples]
-    elif stretched.shape[-1] < target_samples:
-        stretched = torch.nn.functional.pad(
-            stretched, (0, target_samples - stretched.shape[-1])
-        )
-    if waveform.ndim == 2:
-        stretched = stretched.squeeze(0)
-    print(f"[H3 playback] audio: atempo time-stretch {speed}x "
-          f"({samples} -> {stretched.shape[-1]} samples @ {sample_rate} Hz, pitch kept)")
-    return {"waveform": stretched.contiguous(), "sample_rate": sample_rate}
-
-
 class H3LongVideoManager(io.ComfyNode):
     """H3 Long Video Manager — extract H3-compatible segments from video + audio.
 
@@ -292,6 +184,7 @@ class H3LongVideoManager(io.ComfyNode):
             node_id='H3 Long Video Manager',
             display_name='H3 Long Video Manager',
             category='H3/Video',
+            is_output_node=True,
             inputs=[
                 io.Image.Input('video'),
                 io.Int.Input('fps', default=24, min=1, max=240,
@@ -809,6 +702,7 @@ class H3SmartSplit(io.ComfyNode):
             node_id='H3 Smart Split',
             display_name='H3 Smart Split',
             category='H3/Video',
+            is_output_node=True,
             inputs=[
                 io.Image.Input('video'),
                 io.Int.Input('fps', default=24, min=1, max=240,
