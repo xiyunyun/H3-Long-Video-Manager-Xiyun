@@ -206,14 +206,15 @@ def count_references(kind: Any, project: Any) -> int:
     return len(load_references(kind, project)[LIST_KEY])
 
 
-def _reference_cover_url(kind: str, project: str) -> str:
+def _reference_cover_url(kind: str, project: str, entries=None) -> str:
     """First reference card's /view URL; audio libraries have no image cover."""
     if kind != "image":
         return ""
-    try:
-        entries = load_references(kind, project)[LIST_KEY]
-    except ValueError:
-        return ""
+    if entries is None:
+        try:
+            entries = load_references(kind, project)[LIST_KEY]
+        except ValueError:
+            return ""
     if not entries:
         return ""
     entry = entries[0]
@@ -250,10 +251,11 @@ def list_reference_projects(kind: Any) -> List[Dict[str, Any]]:
     for name in sorted(os.listdir(base)):
         if not os.path.isfile(os.path.join(base, name, PRESET_NAME)):
             continue
+        entries = load_references(kind, name)[LIST_KEY]
         out.append({
             "name": name,
-            LIST_KEY: count_references(kind, name),
-            "cover_url": _reference_cover_url(kind, name),
+            LIST_KEY: len(entries),
+            "cover_url": _reference_cover_url(kind, name, entries),
             "updated_at": _preset_updated_at(kind, name),
         })
     return out

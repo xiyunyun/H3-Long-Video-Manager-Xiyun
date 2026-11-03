@@ -239,9 +239,11 @@ def list_upload_projects() -> List[Dict[str, Any]]:
             continue
         cover_url = ""
         updated_at = ""
+        video_count = 0
         try:
             idx = load_upload_index(name)
             videos = sorted(idx.get("videos", []), key=_order_key)
+            video_count = len(videos)
             updated_at = idx.get("updated_at", "")
             if videos:
                 cover = videos[0].get("thumbnail", "")
@@ -252,7 +254,7 @@ def list_upload_projects() -> List[Dict[str, Any]]:
             pass
         out.append({
             "name": name,
-            "videos": _count_lenient(name),
+            "videos": video_count,
             "cover_url": cover_url,
             "updated_at": updated_at,
         })

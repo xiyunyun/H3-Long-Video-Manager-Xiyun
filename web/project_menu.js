@@ -56,6 +56,20 @@ const COVER_ICON = { segments: "🎬", uploads: "📹", image: "🖼️", audio:
 // One popup at a time. Opening a second menu closes the first one, which is
 // what a click outside already looks like.
 let openMenuClose = null;
+const projectRequests = new Map();
+
+function fetchProjectBins(url) {
+    if (!projectRequests.has(url)) {
+        const request = (async () => {
+            const res = await api.fetchApi(url, { cache: "no-store" });
+            if (!res.ok) return [];
+            const data = await res.json().catch(() => ({}));
+            return Array.isArray(data.projects) ? data.projects : [];
+        })().finally(() => { projectRequests.delete(url); });
+        projectRequests.set(url, request);
+    }
+    return projectRequests.get(url);
+}
 
 function fullTime(value) {
     return String(value ?? "").trim().replace("T", " ");
@@ -73,6 +87,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     const config = SCOPE_CONFIG[scope] ?? SCOPE_CONFIG.segments;
     const refScope = config.field === "references";
     let bins = [];
+    let currentPaintKey = "";
     let inFlight = null;
     let search = "";
     let editingName = "";
@@ -312,6 +327,9 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         const active = currentName();
         const bin = bins.find(item => item.name === active)
             || { name: active, [config.field]: 0, cover_url: "", updated_at: "" };
+        const paintKey = JSON.stringify([active, bin]);
+        if (paintKey === currentPaintKey) return;
+        currentPaintKey = paintKey;
         currentCover.textContent = "";
         currentCover.appendChild(makeCover(bin));
         currentNameText.textContent = active;
@@ -434,7 +452,9 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
                 bins.length ? "没有匹配的项目。" : "还没有项目，点「＋ 新建项目」开始。"));
             return;
         }
-        filtered.forEach(bin => grid.appendChild(renderTile(bin)));
+        const fragment = document.createDocumentFragment();
+        filtered.forEach(bin => fragment.appendChild(renderTile(bin)));
+        grid.appendChild(fragment);
         if (editingName) {
             const input = grid.querySelector(".h3lvm-project-rename-input");
             if (input) requestAnimationFrame(() => {
@@ -524,7 +544,6 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
             projectColumns = next;
             saveColumns();
             applyColumns();
-            renderGrid();
         }
     };
     newBtn.onclick = (event) => {
@@ -580,14 +599,8 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     async function refreshBins() {
         let list = [];
         try {
-            const res = await api.fetchApi(
-                `/h3_lvm/projects?scope=${encodeURIComponent(scope)}`,
-                { cache: "no-store" },
-            );
-            if (res.ok) {
-                const data = await res.json().catch(() => ({}));
-                list = Array.isArray(data.projects) ? data.projects : [];
-            }
+            list = (await fetchProjectBins(
+                `/h3_lvm/projects?scope=${encodeURIComponent(scope)}`)).slice();
         } catch (error) {
             if (!signal.aborted) console.warn("[H3 LVM] projects lookup failed:", error);
         }
@@ -597,10 +610,11 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         if (!list.some(bin => bin.name === active)) {
             list.unshift({ name: active, [config.field]: 0, cover_url: "", updated_at: "" });
         }
+        const changed = JSON.stringify(list) !== JSON.stringify(bins);
         bins = list;
         updateWidgetValues();
         paintCurrent();
-        if (modalOpen && !editingName) renderGrid();
+        if (modalOpen && !editingName && changed) renderGrid();
     }
 
     function refresh() {
