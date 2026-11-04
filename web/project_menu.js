@@ -198,20 +198,28 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
 
     searchRow.append(newBtn, createGroup, searchInput, sortSelect, sortDirBtn, columnsSelect);
 
-    const deleteRow = makeElement("div", "h3lvm-new h3lvm-danger");
+    // Deleting a bin is confirmed in a centered card over the grid, not in a row
+    // above it: the sentence names what the delete removes, the two buttons sit
+    // together, and the destructive click is a deliberate one.
+    const deleteRow = makeElement("div", "h3lvm-project-confirm");
     deleteRow.hidden = true;
-    const deleteText = makeElement("span", "h3lvm-danger-text");
+    const confirmCard = makeElement("div", "h3lvm-project-confirm-card");
+    const confirmTitle = makeElement("span", "h3lvm-project-confirm-title");
+    const deleteText = makeElement("span", "h3lvm-project-confirm-text");
     const deleteBtn = makeElement("button", "h3lvm-danger-btn");
     deleteBtn.type = "button";
     const cancelDeleteBtn = makeElement("button", "h3lvm-refresh-btn", "✕ 取消");
     cancelDeleteBtn.type = "button";
     const deleteError = makeElement("span", "h3lvm-new-error");
-    deleteRow.append(deleteText, deleteBtn, cancelDeleteBtn, deleteError);
+    const confirmActions = makeElement("div", "h3lvm-project-confirm-actions");
+    confirmActions.append(cancelDeleteBtn, deleteBtn);
+    confirmCard.append(confirmTitle, deleteText, confirmActions, deleteError);
+    deleteRow.appendChild(confirmCard);
 
     const grid = makeElement("div", "h3lvm-project-grid");
     const modalHint = makeElement("span", "h3lvm-project-modal-hint");
     modalHint.textContent = "点卡片切换项目 · ✎ 重命名会同步所有同名库 · 🗑 删除只处理当前库。";
-    modal.append(head, searchRow, deleteRow, grid, modalHint);
+    modal.append(head, searchRow, grid, modalHint, deleteRow);
     overlay.appendChild(modal);
 
     document.body.appendChild(overlay);
@@ -534,10 +542,15 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         if (event.target === overlay) closeModal();
     };
     document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && modalOpen) {
-            event.stopPropagation();
-            closeModal();
+        if (event.key !== "Escape" || !modalOpen) return;
+        event.stopPropagation();
+        // Escape backs out of the confirmation first, so a half-pressed delete
+        // cannot take the whole menu (and the clicked project) with it.
+        if (!deleteRow.hidden) {
+            closeDeleteRow();
+            return;
         }
+        closeModal();
     }, { signal });
 
     searchInput.oninput = () => {
@@ -598,10 +611,12 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     function showDeleteConfirm(bin) {
         pendingDelete = bin.name;
         resetCreateInput();
+        confirmTitle.textContent = `删除项目「${bin.name}」`;
         deleteText.textContent = deleteWarning(bin.name, bin);
         deleteBtn.textContent = `✔ 删除「${bin.name}」`;
         deleteError.textContent = "";
         deleteRow.hidden = false;
+        cancelDeleteBtn.focus();
     }
 
     cancelDeleteBtn.onclick = (event) => {

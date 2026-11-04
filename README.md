@@ -453,8 +453,11 @@ row in seconds and `↺` to clear the cut, the port it feeds (`参考图 3 → r
 landing spot is the nearest card, so gaps between cards and the space below the last row are
 usable targets, and the grid scrolls while the pointer is held near its top or bottom edge. The panel
 height is fixed, so nothing on it can resize the node. Files go through ComfyUI's
-`/upload/image` into the `input` folder; the list only ever stores relative paths, and
-replacing a file on disk re-decodes it, because the cache key includes size + mtime.
+`/upload/image` into `<input>/h3-lvm-refs/image/<project>` (audio cards use
+`.../audio/<project>`), a folder per project that only these two loaders write to, so a
+story's reference media can be found and cleaned up without guessing which upload
+belongs to it. The list only ever stores relative paths, and replacing a file on disk
+re-decodes it, because the cache key includes size + mtime.
 
 **Parked cards (`⊘ 跳过`)** — a card that must stay in the workflow but should not be sent
 to H3 this run is parked instead of deleted: it moves to a second block at the back of the
@@ -467,8 +470,11 @@ not part of the cache key, because the node never reads them.
 
 **Project reference presets** — a story reuses the same characters and scenes over and over, so the panel can keep the
 current card list as the preset of a project bin and put it back into any node of the same kind: `📤 存为项目预设` writes
-`<output>/h3-lvm-image-refs/<project>/h3lvm_references.json` (the audio loader writes its own
-`<output>/h3-lvm-audio-refs/<project>/h3lvm_references.json`), `📥 载入项目预设` puts that bin's cards back. A preset stores
+`<output>/h3-lvm/h3-lvm-image-refs/<project>/h3lvm_references.json` (the audio loader writes its own
+`<output>/h3-lvm/h3-lvm-audio-refs/<project>/h3lvm_references.json`), `📥 载入项目预设` puts that bin's cards back. Presets written
+before the per-project folder point at the input root or the old kind folder; on startup those files are
+copied into `<input>/h3-lvm-refs/<kind>/<project>` and the preset is repointed at the copy, while the
+originals stay where older workflows still look for them. A preset stores
 **paths only** — the same `{filename, subfolder, type}` a card already holds — so it costs a few hundred bytes however
 big the media is, and nothing is copied, re-uploaded, or duplicated. What it stores is the **arrangement**, not a bag
 of files: the order of the slot cards (that order is the order of the `ref_image_` ports) and which cards were parked
@@ -1088,7 +1094,7 @@ ref_audio_2`（`AUDIO`）。永远是九个 / 三个端口，顺序固定。
 `已用 3/9（ref_image_0..ref_image_2） · 空槽输出 None`）、`＋ 添加参考图` / `＋ 添加参考音频`
 按钮、把文件直接拖进网格，以及每个槽位一张卡片：缩略图（竖屏整帧显示，卡片尺寸不变），音频卡片则是画在同一个缩略图框里的波形（蓝色就是会被输出的部分，灰色不会；`▶` 只试听这一段，点波形可以在这一段里定位）加一行 `开始` / `时长`（秒）和 `↺` 清除裁切——音频卡片与图片卡片同尺寸，由同一个 `卡片大小` 控件缩放，
 它对应的端口（`参考图 3 → ref_image_2`——卡片上的编号给人看，从 1 开始；端口名仍是 `ref_image_2`）、真实输出尺寸，以及 `↻ 替换` / `⊘ 跳过` / `✕ 移除` 按钮（被跳过的卡片上是 `↩ 放回` / `✕ 移除`）；卡片本身可以直接拖动，拖到哪里就换到哪个槽位（卡片顺序就是槽位顺序）。整个面板都是落点，落点取最近的卡片，卡片之间的缝隙和末行下方的空白都能用，指针停在上下边缘时卡片区会自己滚动。面板高度是固定的，
-所以面板上的任何按钮都不会改变节点尺寸。文件通过 ComfyUI 的 `/upload/image` 存到 `input` 目录；
+所以面板上的任何按钮都不会改变节点尺寸。文件通过 ComfyUI 的 `/upload/image` 存到 `<input>/h3-lvm-refs/image/<项目名>`（音频卡片是 `.../audio/<项目名>`），每个项目一个文件夹，只有这两个加载器会写入，清理某个项目的参考素材时不用猜哪个上传属于它；
 列表里只保存相对路径；同名文件被替换后会重新解码，因为缓存键包含文件大小与修改时间。
 
 **已跳过（`⊘ 跳过`）** — 这一轮不想送进 H3、但还想留在工作流里的卡片不会被删除，而是被停到后排：
@@ -1098,7 +1104,7 @@ ref_audio_2`（`AUDIO`）。永远是九个 / 三个端口，顺序固定。
 把放得下的都放回去，放不下的留在后排。已跳过的卡片不占 9/3 的槽位上限，也不进缓存键，因为节点根本不读它。
 
 **项目参考预设** — 一部片子会反复用到同一批角色与场景参考，所以面板可以把当前卡片组合存成某个项目的预设，再放进任何同类节点：
-`📤 存为项目预设` 写入 `<output>/h3-lvm-image-refs/<项目>/h3lvm_references.json`（音频加载器写自己的 `<output>/h3-lvm-audio-refs/<项目>/h3lvm_references.json`），`📥 载入项目预设` 把库里那套卡片放回来。
+`📤 存为项目预设` 写入 `<output>/h3-lvm/h3-lvm-image-refs/<项目>/h3lvm_references.json`（音频加载器写自己的 `<output>/h3-lvm/h3-lvm-audio-refs/<项目>/h3lvm_references.json`），`📥 载入项目预设` 把库里那套卡片放回来。按项目分文件夹之前保存的预设仍指向 input 根目录或旧的类目文件夹；启动时会把这些文件复制到 `<input>/h3-lvm-refs/<kind>/<项目名>` 并把预设改指向副本，原文件保留给旧工作流继续使用。
 预设里**只有路径**——就是卡片本来就持有的那三个字段——所以图片再大也只花几百字节，不复制、不重复上传、不产生第二份文件。
 存的是**排列**，不是一堆文件路径：槽位卡片的先后顺序（这个顺序就是 `ref_image_` 端口的顺序）和哪些卡片当时被跳过，都会存下来并原样恢复。
 图片库与音频库**完全分开**：每一类各有自己的根目录、项目列表和一个只装一份列表的文件——参考图片和参考音频是给不同端口的不同材料，一个按片子命名的素材库说明不了哪些配音属于它，所以音频加载器不会看到图片加载器的项目，反之也一样；拆分前那份共用文件会在第一次读取时按类别各复制一次到对应库里，旧文件原样留着。回来时同样受槽位上限约束（超出部分吃预设的尾部）；载入是**整组替换**——面板之后就是预设那一套（顺序与跳过状态原样），预设外的卡片（含被跳过的）会被移除：预设就是一个项目的参考组合，把剩下的留在旁边等于下一轮悄悄带上用户已经不要的参考；想加卡片就正常「＋ 添加」，同一个预设连载入两次也不会变。

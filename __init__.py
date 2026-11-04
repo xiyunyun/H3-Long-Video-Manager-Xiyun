@@ -4,6 +4,7 @@ import os
 
 from comfy_api.latest import ComfyExtension
 from .comfyui.nodes import NODE_LIST
+from .comfyui.ref_presets import migrate_input_media
 from .comfyui.server_api import register_h3lvm_routes
 from .fork_guard import find_other_copy
 
@@ -38,5 +39,16 @@ class H3LongVideoExtension(ComfyExtension):
 
 async def comfy_entrypoint():
     if not _OTHER_COPY:
+        # Reference presets from before the dedicated input folder point at the input
+        # root. Adopting copies keeps them loadable without breaking workflows that
+        # still use the originals; the migration is idempotent and cheap after the
+        # first run.
+        try:
+            report = migrate_input_media()
+            if report["entries"]:
+                logger.info("[H3 LVM 熙云版] 参考素材迁移完成：%d 个项目、%d 张卡片已指向 input/%s",
+                            report["projects"], report["entries"], "h3-lvm-refs")
+        except Exception:
+            logger.warning("[H3 LVM 熙云版] 参考素材迁移失败（节点仍可使用）", exc_info=True)
         register_h3lvm_routes()
     return H3LongVideoExtension()
