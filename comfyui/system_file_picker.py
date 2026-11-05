@@ -55,4 +55,11 @@ def choose_system_video():
         _dialog_lock.release()
 
 
-__all__ = ["choose_system_video"]
+def open_local_folder(path: str) -> None:
+    """Reveal one folder in the host's file manager; only the path is used."""
+    if platform.system() != "Windows":
+        raise RuntimeError("打开本地目录目前仅支持 Windows。")
+    os.startfile(os.path.realpath(path))
+
+
+__all__ = ["choose_system_video", "open_local_folder"]
