@@ -3,6 +3,14 @@
 > 版本铁规：每次改动前，把旧版本完整快照存入 `archive/<日期>-<commit 短 hash>/`，并在本文件顶部追加一条说明。
 > 只有用户的明确命令才能删改 `archive/` 中的旧版本。
 
+## 2026-11-05 · 「打开本地目录」打开后置前，修复窗口停在浏览器后面
+
+- 现象：点击「📂 打开本地目录」后资源管理器确实打开了，但窗口停在浏览器后面，需要再点一次其他窗口才会浮现。
+- 根因：Windows 前台锁定（foreground lock）。请求由 ComfyUI 服务进程处理，而这个进程不是当前前台进程，Windows 不允许它启动的资源管理器窗口抢占前台；窗口本身已经正常打开。
+- 修复：`system_file_picker.open_local_folder` 在打开前记录已有的资源管理器窗口，`os.startfile` 之后在最多 2 秒内轮询新的 `CabinetWClass` 窗口（优先新增句柄，其次按项目名匹配标题），再 `SW_RESTORE` + `BringWindowToTop` + `SetForegroundWindow`；直接置前失败时用一次 Alt 键释放前台锁定后重试。找不到窗口或置前失败只记日志，目录仍已打开，接口仍返回成功。
+- 覆盖：H3-LVM 的四个素材库与 ClipStream 的项目库共用同一套逻辑（ClipStream 对应 `clipbin/local_folder.py`）。
+- 验证：全部 `web/*.js` 通过 `node --check`；Python **718/718 通过**（新增 3 条打开/置前测试）。实际前台效果由用户复测。
+
 ## 2026-11-05 · 切换项目后自动选中新库的第一个片段
 
 - H3 Segment Picker（片段模式与投放视频模式）与 H3 Long Video Manager：切换项目后，片段/视频编号自动改为新库的第一张卡片，不再保留上一个库的编号（即使那个编号在新库里也存在）。共用同一卡片面板的 Smart Split 也同步生效。
