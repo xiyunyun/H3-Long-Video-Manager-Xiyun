@@ -3,6 +3,12 @@
 > 版本铁规：每次改动前，把旧版本完整快照存入 `archive/<日期>-<commit 短 hash>/`，并在本文件顶部追加一条说明。
 > 只有用户的明确命令才能删改 `archive/` 中的旧版本。
 
+## 2026-11-06 · 融合原版 `7142f40`（本 fork）
+
+- 内容合并原版 `f551942` / `c70b024` / `7142f40`：原版已吸收本 fork 的参考库自动保存与按项目分组、`📂 打开本地目录`、切换项目自动选首卡、资源管理器置前；本轮额外引入原版新增的 `H3 Video Compare Slider` 节点、512px 缩略图与图片元数据路由、并发 GET 合并、卡片墙指纹和合并片段预分配等性能优化。
+- 冲突处理：`README.md`、`VERSION.md` 采用原版；`__init__.py` 合并原版视频对比路由并保留 fork 的共存检测；`server_api.py` 合并缩略图路由；`deck_panel.js`、`project_menu.js`、`ref_loader.js` 采用原版的渲染指纹、`updateBin` 与预设写回优化。
+- 保留 fork 独有内容：`fork_guard.py`、`tests/test_fork_guard.py`、`__init__.py` 的共存检测、根目录提示 txt。原版明确不接收这些内容，因此检测到另一份 H3 Long Video Manager 时本 fork 仍跳过节点、路由与前端加载。
+
 ## 2026-11-06 · 解码、合并与卡片预览性能优化
 
 - 快照：`archive/2026-11-06-c70b024-pre-performance/h3-lvm-c70b024.zip` 保存本轮前已发布基线 `c70b024` 的 120 个 Git 跟踪文件；本轮不创建 tag，按用户命令推送原版 main。
