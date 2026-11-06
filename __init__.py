@@ -6,6 +6,7 @@ from comfy_api.latest import ComfyExtension
 from .comfyui.nodes import NODE_LIST
 from .comfyui.ref_presets import migrate_input_media
 from .comfyui.server_api import register_h3lvm_routes
+from .comfyui.video_compare import register_video_compare_routes
 from .fork_guard import find_other_copy
 
 logger = logging.getLogger(__name__)
@@ -51,4 +52,5 @@ async def comfy_entrypoint():
         except Exception:
             logger.warning("[H3 LVM 熙云版] 参考素材迁移失败（节点仍可使用）", exc_info=True)
         register_h3lvm_routes()
+        register_video_compare_routes()
     return H3LongVideoExtension()

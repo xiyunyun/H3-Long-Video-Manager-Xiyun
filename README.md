@@ -31,6 +31,7 @@ Cut any long video into H3-compatible segments (each satisfying the `17n + 5` fr
 | **H3 Segment Picker** | Input: project name + segment ID → `IMAGE`, `AUDIO`, `frame_count`, `segment_id` (feeds H3 directly) |
 | **H3 Guide Timeline** | Input: `positive` + H3 AV latent + both VAEs + one guide list → image/audio guides placed on a two-lane timeline → `positive` (equal to a hand-wired chain of native Add Guide nodes) |
 | **H3 Guide Timeline v2** | Shared timeline with independent first-pass / second-pass `positive` channels and Guide switches, plus per-image guide strength (0.00-1.00, default 1.00; `0.00` keeps the card but leaves the conditioning); audio keeps native behaviour |
+| **H3 Video Compare Slider** | Synchronized before/after playback with a draggable wipe, IMAGE-batch or VHS Filenames inputs, direct video selection, fullscreen zoom and MP4 comparison recording |
 
 ### Key features
 
@@ -250,8 +251,8 @@ draws the same menu — one control per setting. Hidden widgets are still serial
 graphs saved before this change load unchanged.
 
 **Manager panel** — under the parameters the node has a panel in the same visual language as the
-Segment Picker: the 项目素材库 menu on top (switch / create / delete a bin, with the live segment
-count), then a tool row (`🔄 刷新`, `🔗 合并模式`, `卡片大小` 100%–400%, `🎬 素材库` status), then the card deck. The deck is always open — there is
+Segment Picker: the 项目素材库 row on top (switch / create / delete a bin, with the live segment
+count and `📂 打开本地目录` to open the current folder and bring its Explorer window forward), then a tool row (`🔄 刷新`, `🔗 合并模式`, `卡片大小` 100%–400%, `🎬 素材库` status), then the card deck. The deck is always open — there is
 no collapse button. It reads the selected bin and shows every segment in it, ordered by 片段编号 — thumbnail, 片段编号, frame count
 and duration, ▶ for the MP4 preview and 🗑 for permanent deletion; clicking a card sets 输出片段编号. Segments that this
 node's last run produced carry a small `本次` badge, and the status line names them
@@ -286,6 +287,8 @@ The deck belongs to the bin, not to the page visit: reopening a workflow paints 
 because the panel repaints once the saved 项目素材库 name is restored — no 刷新 click needed. The panel
 height is also the widget's minimum height, so ComfyUI grows any node too short to show a card row and
 keeps the width the user chose.
+Switching, creating, or deleting a project selects the first card in the project that becomes active;
+renaming, refreshing, and restoring a workflow keep the existing selection.
 
 #### H3 Smart Split
 
@@ -306,8 +309,8 @@ There is deliberately **no** `segment_duration`, `align_to_h3_grid`, `final_alig
 able to change frame counts behind your back. The output shape is identical to the Manager,
 so the existing H3 Segment Picker reads either producer unchanged.
 
-**Panel** — the same 项目素材库 menu as the other two nodes (switch / create / delete, with
-the live segment count), then the same card deck as the Manager: every segment in the bin in
+**Panel** — the same 项目素材库 row as the other two nodes (switch / create / delete, live segment
+count, and `📂 打开本地目录`), then the same card deck as the Manager: every segment in the bin in
 segment order, the ones from this node's last run marked `本次`, card zoom 100%–400%, and
 click-a-card to set 输出片段编号. The deck code is shared (`web/deck_panel.js`), so the two
 panels cannot drift apart, and a bin written by one producer shows the same cards in the
@@ -471,9 +474,10 @@ not part of the cache key, because the node never reads them.
 **Project reference presets** — a story reuses the same characters and scenes over and over, so the panel can keep the
 current card list as the preset of a project bin and put it back into any node of the same kind: `📤 存为项目预设` writes
 `<output>/h3-lvm/h3-lvm-image-refs/<project>/h3lvm_references.json` (the audio loader writes its own
-`<output>/h3-lvm/h3-lvm-audio-refs/<project>/h3lvm_references.json`), `📥 载入项目预设` puts that bin's cards back. Presets written
-before the per-project folder point at the input root or the old kind folder; on startup those files are
-copied into `<input>/h3-lvm-refs/<kind>/<project>` and the preset is repointed at the copy, while the
+`<output>/h3-lvm/h3-lvm-audio-refs/<project>/h3lvm_references.json`), `📥 载入项目预设` puts that bin's cards back. Card edits
+are saved automatically after a short delay; switching bins saves the outgoing arrangement before loading the incoming
+preset. Presets written before the per-project folder point at the input root or the old kind folder; on startup those
+files are copied into `<input>/h3-lvm-refs/<kind>/<project>` and the preset is repointed at the copy, while the
 originals stay where older workflows still look for them. A preset stores
 **paths only** — the same `{filename, subfolder, type}` a card already holds — so it costs a few hundred bytes however
 big the media is, and nothing is copied, re-uploaded, or duplicated. What it stores is the **arrangement**, not a bag
@@ -616,10 +620,28 @@ untouched, and both nodes can sit in the same ComfyUI.
   stops with a Chinese error instead of quietly falling back to the global strength. The stable node, a v2 run at
   1.00 and a v2 run at 0.00 keep working - neither touches the model.
 
+#### H3 Video Compare Slider
+
+An independent H3LVM implementation of the before/after comparison tool; it does not import or require VRGDG.
+Connect two IMAGE batches (set their playback rate with `fps`), two Video Helper Suite `Filenames` outputs, or choose
+two local videos in the panel. Drag the picture to move the wipe and use the shared timeline for synchronized playback.
+Fullscreen carries the playback controls and adds scroll-wheel zoom. The default-open `对比设置` area holds labels,
+recording duration and IMAGE fps. `录制对比视频` saves the current labeled wipe as an MP4 in ComfyUI's output directory;
+if server-side conversion is unavailable, the browser offers a temporary WebM download instead. The two
+`VHS_FILENAMES` outputs pass the selected source paths through for downstream nodes.
+
+IMAGE batches are encoded one frame at a time instead of duplicating the whole batch in memory. Temporary comparison
+previews are bounded (the current files plus the 16 most recent others, with a 24-hour age limit). Local uploads accept
+up to 8 GiB; recordings are capped at a 1920-pixel long edge, 8 Mbps and 512 MiB, and server-side conversion stops
+after 15 minutes if it cannot finish.
+
 ### API endpoints
 
 | Endpoint | Returns |
 |----------|---------|
+| `GET /h3_lvm/video_compare/media?path=<path>` | Streams a video from ComfyUI's input, output or temp directory for the comparison player |
+| `POST /h3_lvm/video_compare/upload` | Same-origin multipart upload of one directly selected comparison video into ComfyUI's input directory |
+| `POST /h3_lvm/video_compare/recording` | Converts the browser's recorded WebM into an MP4 in ComfyUI's output directory |
 | `GET /h3_lvm/projects?scope=segments\|image\|audio\|uploads` | `{"projects": [...], "default": "H3_LVM"}` — `scope=segments` (default) is the video bins with their segment count (Picker/Manager); `scope=image` / `scope=audio` is that kind's own reference library with its card count (the two loaders) |
 | `POST /h3_lvm/project` | body `{"project": <typed name>, "scope": "segments"\|"image"\|"audio"\|"uploads"}` → `{"name": <sanitized>, "created": true/false, "segments"\|"references": N}` — the scope picks which library the bin is created in |
 | `POST /h3_lvm/project/delete` | body `{"project": <name>, "confirm": <same name>, "scope": ...}` → `{"name": ..., "deleted": true, ...}` — only that library is touched, never the video bin or the other kind |
@@ -770,6 +792,7 @@ H3-Long-Video-Manager/
 | **H3 Segment Picker** | 从库中读取 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`segment_id`（前两项直接喂 H3） |
 | **H3 Guide 时间轴** | 输入：`positive` + H3 AV latent + 两个 VAE + 一个 Guide 列表 → 在双轨时间轴上放图片/音频 Guide → 输出 `positive`（与手动串联原生 Add Guide 等价） |
 | **H3 Guide 时间轴 v2** | 单组 `positive / latent` 的图片、音频时间轴，每张图片可单独设置引导强度（0.00-1.00，默认 1.00；`0.00` 保留卡片但不加入 conditioning）；音频保持原生行为。第二个输出是「共享 Guide 文档」，交给 **H3 Guide 时间轴 v2（二采信息传输）** 应用到独立二采条件；传输节点无编辑器，只有一个启用开关 |
+| **H3 视频对比滑块** | 两个视频同步播放 + 可拖动分割线；支持 IMAGE 批次、VHS Filenames、本机选片、全屏缩放和 MP4 对比录制 |
 
 ### 核心特性
 
@@ -959,9 +982,10 @@ Manager v2 暂不包含 v1 的人物裁切控件；需要该功能时继续使�
 但 widget 本身被隐藏（`options.hidden`），因为面板顶部已经有同一个菜单——一个设置只留一个控件。隐藏的 widget
 仍按位置序列化，所以改动前保存的工作流打开后参数不会错位。
 
-**Manager 面板** — 参数下面是与 H3 Segment Picker 同一套视觉的面板：顶部是项目素材库菜单（切换 / 新建 / 删除项目，右侧实时显示片段数），接着是工具行（`🔄 刷新`、`🔗 合并模式`、`卡片大小` 100%–400%、`🎬 素材库` 状态），再下面是常开的卡片网格（没有折叠按钮）。卡片区读的是当前选中的素材库，按片段编号顺序显示库内**全部**片段：缩略图、片段编号、帧数和时长，带 ▶ 按钮播放 MP4 预览和 🗑 永久删除按钮，点卡片就是把该段设为「输出片段编号」。本节点上一次运行产出的片段带一个 `本次` 小标记，状态行会写清楚（`库内 17 段 · 本次生成 6 段（片段 1–6）`）。在 Manager、Smart Split（含 v2）或 Segment Picker 中删除片段，其他面板都会同步移除该卡片。这里不保存任何状态：本次编号来自节点保存后本来就会发的 `h3_lvm/changed` 事件，刷新页面后只剩素材库本身、没有标记。缩略图按画面方向自适应：横屏铺满，竖屏（9:16）整帧显示并在后面垫一层同帧模糊副本，卡片尺寸不变。
+**Manager 面板** — 参数下面是与 H3 Segment Picker 同一套视觉的面板：顶部是项目素材库一行（切换 / 新建 / 删除项目、实时片段数，以及打开当前项目文件夹并尝试将资源管理器窗口置前的 `📂 打开本地目录`），接着是工具行（`🔄 刷新`、`🔗 合并模式`、`卡片大小` 100%–400%、`🎬 素材库` 状态），再下面是常开的卡片网格（没有折叠按钮）。卡片区读的是当前选中的素材库，按片段编号顺序显示库内**全部**片段：缩略图、片段编号、帧数和时长，带 ▶ 按钮播放 MP4 预览和 🗑 永久删除按钮，点卡片就是把该段设为「输出片段编号」。本节点上一次运行产出的片段带一个 `本次` 小标记，状态行会写清楚（`库内 17 段 · 本次生成 6 段（片段 1–6）`）。在 Manager、Smart Split（含 v2）或 Segment Picker 中删除片段，其他面板都会同步移除该卡片。这里不保存任何状态：本次编号来自节点保存后本来就会发的 `h3_lvm/changed` 事件，刷新页面后只剩素材库本身、没有标记。缩略图按画面方向自适应：横屏铺满，竖屏（9:16）整帧显示并在后面垫一层同帧模糊副本，卡片尺寸不变。
 
 卡片区属于素材库而不是这一次页面访问：重新打开工作流时，面板会在「项目素材库」的名字恢复之后自己重画，卡片直接出现，不需要点刷新。面板高度同时是 widget 的最小高度，节点太矮时 ComfyUI 会自动长到能显示一行卡片，宽度按用户自己的设置不变。
+主动切换、新建或删除项目后，新进入的项目自动选中第一张卡片；重命名、手动刷新和恢复工作流不会重置已经选中的卡片。
 
 **卡片大小** — 两个面板用的是同一个控件（`web/card_zoom.js`）：`−` / `+` 在 100% / 150% / 200% / 300% / 400% 之间步进，到两端按钮自己变灰而不是绕回，卡片区在面板内滚动。它只改 CSS 变量 `--card-min` 和 `--thumb-h`，节点尺寸完全由用户掌握。
 
@@ -985,7 +1009,7 @@ Manager v2 暂不包含 v1 的人物裁切控件；需要该功能时继续使�
 镜头边界不是一个时长，节点也不该在背后悄悄改动帧数。输出接口与 Manager 完全一致，
 所以现有的 H3 Segment Picker 不需要任何改动就能读两种产出。
 
-**面板** — 顶部是与其他两个节点完全相同的项目素材库菜单（切换 / 新建 / 删除，右侧实时显示片段数），
+**面板** — 顶部是与其他两个节点完全相同的项目素材库一行（切换 / 新建 / 删除、实时片段数、`📂 打开本地目录`），
 下面是与 Manager 完全相同的卡片区：按片段顺序显示库内全部片段，本节点这次运行产生的卡片带
 `本次` 角标，卡片缩放 100%–400%，点卡片即切换输出片段编号，右下角 🗑 可永久删除该片段。卡片区代码是共用的
 （`web/deck_panel.js`），两个节点写的是同一个素材库，所以任一节点产出的卡片在另一个节点里
@@ -1038,7 +1062,7 @@ Manager v2 暂不包含 v1 的人物裁切控件；需要该功能时继续使�
 不可拖动：那边的编号是 Manager / Smart Split 保存时写下的，不在这里改。
 
 **面板布局** — 自上而下四行：① 两个模式按钮（`🎬 裁切片段` / `📥 投放视频`）；② 带标签的项目
-菜单，右侧实时显示当前库的数量（`＋ 新建项目…` 与 `🗑 删除当前项目…` 都在这个菜单里）；
+菜单，右侧实时显示当前库的数量（`＋ 新建项目…` 与 `🗑 删除当前项目…` 都在这个菜单里），旁边可用 `📂 打开本地目录` 打开当前项目文件夹；
 ③ 工具行（刷新、卡片大小 100%–400%、当前选中，投放模式下还有 `＋ 载入视频`）；④ 卡片网格，
 最下方一行操作图例。卡片标题与状态文字全部中文，节点参数名也显示为中文（`label` 只影响显示，
 保存的工作流仍然是 `project_name` / `segment_id` / `source_mode` / `output_size` / `custom_max_side`）。
@@ -1046,7 +1070,8 @@ Manager v2 暂不包含 v1 的人物裁切控件；需要该功能时继续使�
 **两个模式各自的选中都会恢复** — 每个模式各自的项目 + 卡片存在
 `node.properties["h3lvm_picker_modes"]`：保存工作流、重新打开、甚至重启 ComfyUI 之后，两个模式
 各自选中的东西都会回来；读取时以工作流里的值为准，所以这个功能之前保存的工作流仍然打开在
-裁切片段。把文件拖到卡片区就是上传（视频文件不会让 ComfyUI 顺手生成 `LoadImage` 节点）。
+裁切片段。主动切换、新建或删除项目后自动选中目标项目的第一张卡片；重命名、刷新和恢复工作流不重置选中。
+把文件拖到卡片区就是上传（视频文件不会让 ComfyUI 顺手生成 `LoadImage` 节点）。
 投放卡片显示封面、原始文件名、时长、分辨率、源帧率（与 24fps 不同时会标注「输出按 24fps 采样」）
 以及有无音轨；在 ComfyUI 外面删掉的文件不会让卡片消失，而是保留卡片并标注「文件已丢失」。
 ▶ 在浏览器能播的封装里直接预览（`.mkv` / `.avi` 会说明为什么不能），🗑 删除这张卡片和它的文件。
@@ -1104,11 +1129,11 @@ ref_audio_2`（`AUDIO`）。永远是九个 / 三个端口，顺序固定。
 把放得下的都放回去，放不下的留在后排。已跳过的卡片不占 9/3 的槽位上限，也不进缓存键，因为节点根本不读它。
 
 **项目参考预设** — 一部片子会反复用到同一批角色与场景参考，所以面板可以把当前卡片组合存成某个项目的预设，再放进任何同类节点：
-`📤 存为项目预设` 写入 `<output>/h3-lvm/h3-lvm-image-refs/<项目>/h3lvm_references.json`（音频加载器写自己的 `<output>/h3-lvm/h3-lvm-audio-refs/<项目>/h3lvm_references.json`），`📥 载入项目预设` 把库里那套卡片放回来。按项目分文件夹之前保存的预设仍指向 input 根目录或旧的类目文件夹；启动时会把这些文件复制到 `<input>/h3-lvm-refs/<kind>/<项目名>` 并把预设改指向副本，原文件保留给旧工作流继续使用。
+`📤 存为项目预设` 写入 `<output>/h3-lvm/h3-lvm-image-refs/<项目>/h3lvm_references.json`（音频加载器写自己的 `<output>/h3-lvm/h3-lvm-audio-refs/<项目>/h3lvm_references.json`），`📥 载入项目预设` 把库里那套卡片放回来。卡片编辑会在短暂防抖后自动保存；切换项目时先保存当前排列，再载入目标项目的预设。按项目分文件夹之前保存的预设仍指向 input 根目录或旧的类目文件夹；启动时会把这些文件复制到 `<input>/h3-lvm-refs/<kind>/<项目名>` 并把预设改指向副本，原文件保留给旧工作流继续使用。
 预设里**只有路径**——就是卡片本来就持有的那三个字段——所以图片再大也只花几百字节，不复制、不重复上传、不产生第二份文件。
 存的是**排列**，不是一堆文件路径：槽位卡片的先后顺序（这个顺序就是 `ref_image_` 端口的顺序）和哪些卡片当时被跳过，都会存下来并原样恢复。
 图片库与音频库**完全分开**：每一类各有自己的根目录、项目列表和一个只装一份列表的文件——参考图片和参考音频是给不同端口的不同材料，一个按片子命名的素材库说明不了哪些配音属于它，所以音频加载器不会看到图片加载器的项目，反之也一样；拆分前那份共用文件会在第一次读取时按类别各复制一次到对应库里，旧文件原样留着。回来时同样受槽位上限约束（超出部分吃预设的尾部）；载入是**整组替换**——面板之后就是预设那一套（顺序与跳过状态原样），预设外的卡片（含被跳过的）会被移除：预设就是一个项目的参考组合，把剩下的留在旁边等于下一轮悄悄带上用户已经不要的参考；想加卡片就正常「＋ 添加」，同一个预设连载入两次也不会变。
-面板第一行就是共用的 `📦 项目素材库` 选单（切换 / `＋ 新建项目…` / `🗑 删除当前项目…`），在这两个节点上它列的是**本类自己的库**、数的是**参考卡片张数**（`项目名 (4 张)`、`共 4 张参考`、`无预设`）——参考库里没有视频片段，以前只会显示（空）；Picker 与 Manager 仍然数片段。在这里新建或删除项目也只作用于本类：删掉一部片子的配音预设不会带走它的角色图。状态行会显示库里有什么（`项目预设 4（含 1 张已跳过）`），空库时载入按钮是禁用的。预设文件缺失或写坏时读出来是空的，不会让面板报错；切换项目会重新读取。
+面板第一行就是共用的 `📦 项目素材库` 选单（切换 / `＋ 新建项目…` / `🗑 删除当前项目…`），旁边是打开当前项目文件夹的 `📂 打开本地目录`。在这两个节点上它列的是**本类自己的库**、数的是**参考卡片张数**（`项目名 (4 张)`、`共 4 张参考`、`无预设`）——参考库里没有视频片段，以前只会显示（空）；Picker 与 Manager 仍然数片段。在这里新建或删除项目也只作用于本类：删掉一部片子的配音预设不会带走它的角色图。状态行会显示库里有什么（`项目预设 4（含 1 张已跳过）`），空库时载入按钮是禁用的。预设文件缺失或写坏时读出来是空的，不会让面板报错；切换项目会重新读取。
 
 **与官方节点的默认值差异** — 官方 `ref_image_size` 是 `match`/`max`（短边 ≤ 2048，16:9 画面约
 3.2 MP），而 `LoadImage` + 缩放到长边 512 的旧链路大约只有 0.15 MP。这两个节点默认 0.25 MP；
@@ -1203,12 +1228,41 @@ base64。关闭编辑器或删除节点都不会删除素材，因为别的工�
 - 当前 ComfyUI 装不上这个模型适配时（内核实现变了，或别的插件已经改写过同一批模型方法），v2 低于 1.00 的运行会用
   中文报错停下，不会静默退回全局强度。旧节点、v2 的 1.00 路径和 v2 的 0.00 路径照常运行——两者都不碰模型。
 
+#### H3 视频对比滑块
+
+这是 H3LVM 自己实现的对比工具，不导入也不要求安装 VRGDG。接入两个 IMAGE 批次时，用 `IMAGE 帧率`
+指定播放 FPS；也可以连接 Video Helper Suite 的两个 `Filenames` 输出，或在面板上分别选择原视频与处理后视频。
+直接拖动画面移动分割线，底部时间轴控制两个视频同步播放。全屏模式保留播放工具栏并支持滚轮缩放。
+默认展开的「对比设置」用于修改标签、录制时长和 IMAGE 帧率。「录制对比视频」把当前带标签的分割画面存成
+ComfyUI output 目录里的 MP4；服务端无法转码时会提供临时 WebM 下载。两个 `VHS_FILENAMES` 输出把所选源文件路径
+继续传给下游节点。
+
+IMAGE 批次会逐帧送入 FFmpeg，不再为整段视频同时制造多份完整内存副本。本节点生成的临时预览保留当前文件及
+最近 16 个其他文件，并清理超过 24 小时的旧预览。本机选片上传上限为 8 GiB；录制最长边为 1920 像素、目标码率
+8 Mbps、上传上限 512 MiB，服务端转码超过 15 分钟会停止并清理半成品。
+
+#### 预览与内存优化
+
+整段视频解码先保留 uint8 帧，最后统一转换为 float32；int8/uint8 片段读取使用原地归一化。
+Manager / Smart Split 合并时预分配最终视频张量并逐段写入，不再额外生成一次完整的视频 `torch.cat`
+副本。音频合并逻辑不变。
+
+图片参考卡、Guide 卡片/轨道/拖拽预览和项目封面使用最长边 512 的 JPEG 缩略图；缓存只在源文件
+大小或修改时间变化时失效。卡片上的源图尺寸由独立元数据接口读取，模型执行仍读取原图，不会把
+缩略图作为生成条件。相同地址的并发 GET 会合并，完成后立即释放；卡片数据未变化时保留现有 DOM。
+
 ### API 接口
 
 | 接口 | 返回 |
 |------|------|
+| `GET /h3_lvm/video_compare/media?path=<路径>` | 为对比面板读取 ComfyUI input、output 或 temp 目录内的视频 |
+| `POST /h3_lvm/video_compare/upload` | 同源 multipart 上传一个本机对比视频到 ComfyUI input 目录 |
+| `POST /h3_lvm/video_compare/recording` | 把浏览器录制的 WebM 转成 ComfyUI output 目录内的 MP4 |
+| `GET /h3_lvm/image_thumbnail` | 为 input、output 或 temp 内的安全图片路径生成最长边 512 的 JPEG 预览；不改变原图 |
+| `GET /h3_lvm/image_metadata` | 读取同范围图片经过 EXIF 方向校正后的原始宽高，不向浏览器传输整张原图 |
 | `GET /h3_lvm/projects?scope=segments\|image\|audio\|uploads` | `{"projects": [...], "default": "H3_LVM"}` — `scope=segments`（默认）是视频素材库 + 片段数量（Picker/Manager 用）；`scope=image` / `scope=audio` 是那一类自己的参考库 + 卡片数（两个参考加载器用） |
 | `POST /h3_lvm/project` | 请求 `{"project": <用户输入的名字>, "scope": "segments"\|"image"\|"audio"\|"uploads"}` → `{"name": <清洗后的名字>, "created": true/false, "segments"\|"references": N}` — scope 决定在哪个库里新建 |
+| `POST /h3_lvm/project/open` | 请求 `{"project": <库名>, "scope": ...}` → 在 Windows 宿主的资源管理器中打开该 scope 下已经存在的项目目录，并尝试将新窗口置前；置前失败不影响目录已经打开。目录不存在返回中文 404，非 Windows 宿主返回中文 501 |
 | `POST /h3_lvm/project/delete` | 请求 `{"project": <库名>, "confirm": <同一个库名>, "scope": ...}` → `{"name": ..., "deleted": true, ...}` — 只动那一个库，不会碰视频素材库或另一类参考 |
 | `GET /h3_lvm/ref_presets?project=<项目名>&kind=image\|audio` | `{"project_name": <项目名>, "references": [...]}` — 那一类在该项目下的预设，只有路径；kind 不是 image/audio 时返回中文 400 |
 | `POST /h3_lvm/ref_presets` | 请求 `{"project": <项目名>, "kind": "image"\|"audio", "entries": <面板 JSON>}` → `{"name": ..., "kind": ..., "saved": N}` — 只写那一类自己的库文件 |
