@@ -275,7 +275,8 @@ carry a `🔗 合并模式` button in the tool row, on the same row and at the s
 non-adjacent one restarts the selection), they get an `已选` badge, and `✅ 确认合并` appears in
 the same row. The merge joins those segments into one card that keeps the **smallest** id of the
 selection, and every later segment shifts down by the number of removed cards, so the bin stays
-numbered 1..N with no holes — which is what 输出片段编号 reads. Joining drops the Motion Context
+in its existing order. Adjacency uses positions in the current library: after deleting card 2,
+cards 1 and 3 can merge; if card 2 still exists they cannot. Deleting a card preserves the other IDs. Joining drops the Motion Context
 overlap at every seam (the head frames of each segment after the first, plus the matching audio
 head), so the joined clip neither replays frames nor drifts off the picture; audio survives only
 when every part has it. Frames are concatenated in the stored packed format (int8/fp16), so a long
@@ -628,7 +629,9 @@ two local videos in the panel. Drag the picture to move the wipe and use the sha
 Fullscreen carries the playback controls and adds scroll-wheel zoom. The default-open `对比设置` area holds labels,
 recording duration and IMAGE fps. `录制对比视频` saves the current labeled wipe as an MP4 in ComfyUI's output directory;
 if server-side conversion is unavailable, the browser offers a temporary WebM download instead. The two
-`VHS_FILENAMES` outputs pass the selected source paths through for downstream nodes.
+`VHS_FILENAMES` outputs pass the selected source paths through for downstream nodes. The toolbar's
+`xxx音频` button follows the custom left/right labels and switches the audible source; mute applies to
+the selected source.
 
 IMAGE batches are encoded one frame at a time instead of duplicating the whole batch in memory. Temporary comparison
 previews are bounded (the current files plus the 16 most recent others, with a 24-hour age limit). Local uploads accept
@@ -650,7 +653,7 @@ after 15 minutes if it cannot finish.
 | `GET /h3_lvm/segments?project=<name>` | Full segment list with thumbnail URLs |
 | `GET /h3_lvm/ref_plan?w=&h=&mp=&upscale=0|1` | `{"width", "height", "actual_megapixels", "area_error", "ratio_error", "mode"}` — the 32-grid size the reference loader will really produce for that source, target and upscale setting; `mode` is `target_mp` or `grid_align` and is what puts the "not upscaled" note on the card |
 | `POST /h3_lvm/delete` | body `{"project": <name>, "segment_id": N}` → `{"deleted": N}` |
-| `POST /h3_lvm/merge` | body `{"project": <name>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — joins consecutive segments; a Chinese 400 for a non-consecutive selection or mismatched fps/size |
+| `POST /h3_lvm/merge` | body `{"project": <name>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — joins neighbouring cards in the current library (deleted ID gaps allowed); a Chinese 400 for skipping an existing card or mismatched fps/size |
 | `GET /h3_lvm/video_files?directory=<input-relative-folder>` | One directory for H3 Video Loader's server file browser: immediate subfolders and videos with path / size / mtime; absolute paths and escaping `input` are refused |
 | `GET /h3_lvm/video_file_info?path=<input-relative-video>` | Probe the selected input video for the browser's confirmation details; cannot probe an arbitrary disk path |
 | `POST /h3_lvm/source_preview` + `GET /h3_lvm/source_preview?ticket=...` | Same-origin JSON creates a short-lived ticket for the selected v2 source; GET streams only that authorized file with HTTP Range, never a caller-supplied disk path |
@@ -989,7 +992,7 @@ Manager v2 暂不包含 v1 的人物裁切控件；需要该功能时继续使�
 
 **卡片大小** — 两个面板用的是同一个控件（`web/card_zoom.js`）：`−` / `+` 在 100% / 150% / 200% / 300% / 400% 之间步进，到两端按钮自己变灰而不是绕回，卡片区在面板内滚动。它只改 CSS 变量 `--card-min` 和 `--thumb-h`，节点尺寸完全由用户掌握。
 
-**合并模式** — 自动切分有时会把一个镜头切成好几个小片段，所以两个卡片区都在工具行里放了 `🔗 合并模式`，与 `🔄 刷新` 同一行同一高度。打开后卡片可以点选：点两段以上**相邻**的卡片（点了不相邻的就重新从这一段开始选），卡片上出现 `已选` 角标，同一行出现 `✅ 确认合并`。合并把这几段接成一个卡片，**编号沿用所选里最小的那个**，后面的片段按删掉的段数依次前移，整个库始终是 1..N 连续编号——也就是「输出片段编号」读的那个号。相接时会去掉每个接缝的 Motion Context 重叠帧（第一段之后每段头部的若干帧，音频按同样的时长同步裁掉），所以接出来的片段既不会重复帧也不会音画错位；只要有一段没有音频，合并结果就不带音频。帧数据按库里存的 packed 格式（int8/fp16）直接拼接，长片段不会因为合并而多吃一份 float32 内存。所选片段帧率或分辨率不一致会被拒绝并给出中文提示。合并模式只是界面上的状态，不写进工作流，刷新页面就关掉。
+**合并模式** — 自动切分有时会把一个镜头切成好几个小片段，所以两个卡片区都在工具行里放了 `🔗 合并模式`，与 `🔄 刷新` 同一行同一高度。打开后卡片可以点选：点两段以上**相邻**的卡片（点了不相邻的就重新从这一段开始选），卡片上出现 `已选` 角标，同一行出现 `✅ 确认合并`。合并把这几段接成一个卡片，**编号沿用所选里最小的那个**，后面的片段按删掉的段数依次前移，保留现有卡片顺序。「相邻」按当前素材库中实际卡片的位置判断：删除 2 后可以合并 1、3；2 仍存在时不能跳过它合并。删除卡片本身不重排其他编号。相接时会去掉每个接缝的 Motion Context 重叠帧（第一段之后每段头部的若干帧，音频按同样的时长同步裁掉），所以接出来的片段既不会重复帧也不会音画错位；只要有一段没有音频，合并结果就不带音频。帧数据按库里存的 packed 格式（int8/fp16）直接拼接，长片段不会因为合并而多吃一份 float32 内存。所选片段帧率或分辨率不一致会被拒绝并给出中文提示。合并模式只是界面上的状态，不写进工作流，刷新页面就关掉。
 
 #### H3 Smart Split
 
@@ -1235,7 +1238,7 @@ base64。关闭编辑器或删除节点都不会删除素材，因为别的工�
 直接拖动画面移动分割线，底部时间轴控制两个视频同步播放。全屏模式保留播放工具栏并支持滚轮缩放。
 默认展开的「对比设置」用于修改标签、录制时长和 IMAGE 帧率。「录制对比视频」把当前带标签的分割画面存成
 ComfyUI output 目录里的 MP4；服务端无法转码时会提供临时 WebM 下载。两个 `VHS_FILENAMES` 输出把所选源文件路径
-继续传给下游节点。
+继续传给下游节点。工具栏的「xxx音频」按钮跟随左右标签名称，点击切换音源，静音键控制当前所选音源。
 
 IMAGE 批次会逐帧送入 FFmpeg，不再为整段视频同时制造多份完整内存副本。本节点生成的临时预览保留当前文件及
 最近 16 个其他文件，并清理超过 24 小时的旧预览。本机选片上传上限为 8 GiB；录制最长边为 1920 像素、目标码率
@@ -1262,7 +1265,7 @@ Manager / Smart Split 合并时预分配最终视频张量并逐段写入，不�
 | `GET /h3_lvm/image_metadata` | 读取同范围图片经过 EXIF 方向校正后的原始宽高，不向浏览器传输整张原图 |
 | `GET /h3_lvm/projects?scope=segments\|image\|audio\|uploads` | `{"projects": [...], "default": "H3_LVM"}` — `scope=segments`（默认）是视频素材库 + 片段数量（Picker/Manager 用）；`scope=image` / `scope=audio` 是那一类自己的参考库 + 卡片数（两个参考加载器用） |
 | `POST /h3_lvm/project` | 请求 `{"project": <用户输入的名字>, "scope": "segments"\|"image"\|"audio"\|"uploads"}` → `{"name": <清洗后的名字>, "created": true/false, "segments"\|"references": N}` — scope 决定在哪个库里新建 |
-| `POST /h3_lvm/project/open` | 请求 `{"project": <库名>, "scope": ...}` → 在 Windows 宿主的资源管理器中打开该 scope 下已经存在的项目目录，并尝试将新窗口置前；置前失败不影响目录已经打开。目录不存在返回中文 404，非 Windows 宿主返回中文 501 |
+| `POST /h3_lvm/project/open` | 请求 `{"project": <库名>, "scope": ...}` → 在 Windows 宿主的资源管理器中打开项目素材目录并尝试置前。`image` / `audio` 分别打开 `input/h3-lvm-refs/<image|audio>/<项目名>`（需要时创建），不再打开只保存路径的预设索引；segments / uploads 仍打开原项目目录，缺失时返回中文 404。非 Windows 宿主返回中文 501 |
 | `POST /h3_lvm/project/delete` | 请求 `{"project": <库名>, "confirm": <同一个库名>, "scope": ...}` → `{"name": ..., "deleted": true, ...}` — 只动那一个库，不会碰视频素材库或另一类参考 |
 | `GET /h3_lvm/ref_presets?project=<项目名>&kind=image\|audio` | `{"project_name": <项目名>, "references": [...]}` — 那一类在该项目下的预设，只有路径；kind 不是 image/audio 时返回中文 400 |
 | `POST /h3_lvm/ref_presets` | 请求 `{"project": <项目名>, "kind": "image"\|"audio", "entries": <面板 JSON>}` → `{"name": ..., "kind": ..., "saved": N}` — 只写那一类自己的库文件 |
@@ -1288,3 +1291,20 @@ Manager / Smart Split 合并时预分配最终视频张量并逐段写入，不�
 ### License
 
 MIT
+
+
+### Guide 图片关键帧阶段控制
+
+时间轴编辑器的「图片仅前期」可让本时间轴图片在噪声低于释放阈值后停止直接提供条件。默认关闭；启用后需将 MODEL 经新增的「H3 Guide 关键帧阶段控制」节点接入采样器。默认阈值 0.9 是 sigma 阈值，不是前 90% 步数。音频、上游关键帧和普通参考保留，支持 v2 逐图强度及共享文档。完整接线与边界说明见 `GUIDE_TIMELINE.md` 的阶段控制章节。真实 H3 生成效果待小样验收。
+
+## Guide 时间轴工作台（2026-11-13）
+
+稳定版与 v2 的“打开 Guide 编辑器”使用同一套三栏界面：左侧搜索/导入素材，中间预览参考和编排两条轨道，右侧修改选中素材。卡片上的精细时间、替换、复制、删除等集中到右侧；音频的源裁入/裁出仍按采样点保存，试听继续使用当前裁切。
+
+“图片参考约束”影响全部时间轴图片，向右保留图片条件更久，最右表示全程保留。它控制释放时机，不是采样步数百分比。提前释放仍需要 H3 Guide 关键帧阶段控制 MODEL 节点；右侧“生成设置”可精确调整 Sigma。v2 的单图 strength 位于“高级：条件强度 · 当前图片”，稳定版不显示它。
+
+编辑器内撤销/重做最多保留 60 步，选择、搜索和缩放不计入编辑。关闭编辑器保留文档，页面刷新或重新加载工作流会清空内存中的撤销历史，不影响已保存素材与参数。旧文档默认全程保留，不会因打开界面自动增加 keyframe_release 字段。
+
+前端部署需一起覆盖 web/guide_timeline.js、web/guide_editor_state.js、web/guide_workbench.css，并保留现有 web/guide_timeline.css 等依赖。只更新本次前端后 Ctrl+F5；若尚未安装前一轮 MODEL 释放节点，还需先部署相应后端并重启。
+
+浏览器回归：安装 Playwright 后运行 node tests/test_guide_workbench.cjs；可通过 H3_PLAYWRIGHT_MODULE 指定模块路径，通过 H3_BROWSER 指定浏览器可执行文件。测试使用正式前端文件、最小宿主桥和本地图片/音频，输出到 .tmp_run/editor-workbench，不执行生成或改动运行副本。

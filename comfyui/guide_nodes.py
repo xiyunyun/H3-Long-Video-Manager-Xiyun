@@ -49,6 +49,7 @@ from ..core.ref_size import MAX_SOURCE_PIXELS
 from .ref_nodes import _decode_audio_file, _media_roots
 # v2 only. Importing this module never touches the model: install() does, and only
 # when a v2 run actually asks for less than full strength.
+from ..core.guide_release import RELEASE_KEY, parse_release, release_fingerprint
 from .h3_strength_patch import apply_image_strength, install_reason, install as install_strength_patch
 
 logger = logging.getLogger(__name__)
@@ -335,36 +336,48 @@ class H3GuideTimeline(io.ComfyNode):
                         "frame_index 为 null 是待放置：两者都保留在列表里，但不编码、不占配额。"
                         "文档里的 resolved_frame_count 与 view_state 只是面板状态，不参与执行。"),
                 ),
+                io.Boolean.Input(
+                    "enable_guide", display_name="启用时间轴", optional=True, default=True,
+                    label_on="启用", label_off="忽略",
+                    tooltip="关闭后忽略本节点全部图片和音频时间轴信息，positive 原样透传；卡片与编排保留。v2 共享文档仍传递，二采由自己的开关控制。"),
             ],
             outputs=[io.Conditioning.Output(display_name="positive")],
         )
 
     @classmethod
-    def validate_inputs(cls, guides, length_seconds=0.0, **_):
+    def validate_inputs(cls, guides, length_seconds=0.0, enable_guide=True, **_):
+        if not enable_guide:
+            return True
         try:
             cls._parse(guides)
+            parse_release(guides)
         except ValueError as exc:
             return str(exc)
         return True
 
     @classmethod
-    def fingerprint_inputs(cls, guides, **_):
+    def fingerprint_inputs(cls, guides, enable_guide=True, **_):
         """Execution identity: the guide list plus the real bytes behind each file.
 
         Deliberately not the widget string - the panel also stores the selected card
         and the timeline zoom in that JSON, and moving a slider must not re-encode
         thirty guides.
         """
+        if not enable_guide:
+            # v2 still outputs its document, so edits must invalidate that output.
+            return "timeline_disabled|" + (repr(guides) if cls.DOCUMENT_OUTPUT else "")
         try:
             digest = guide_fingerprint_v2 if cls.STRENGTH_ENABLED else guide_fingerprint
-            return digest(cls._parse(guides), _media_roots())
+            return digest(cls._parse(guides), _media_roots()) + release_fingerprint(guides)
         except Exception:
             return repr(guides)
 
     @classmethod
     def execute(cls, positive=None, latent=None, guides=DEFAULT_GUIDES, length_seconds=0.0,
                 vae=None, audio_vae=None, positive_b=None, enable_a=True,
-                enable_b=False, latent_b=None, shared_guides=None) -> io.NodeOutput:
+                enable_b=False, latent_b=None, shared_guides=None, enable_guide=True) -> io.NodeOutput:
+        if not enable_guide:
+            return cls._node_output(positive, positive_b, [], 0, guides)
         return cls._run(positive, latent, guides, length_seconds=length_seconds,
                         vae=vae, audio_vae=audio_vae, positive_b=positive_b,
                         enable_a=enable_a, enable_b=enable_b, latent_b=latent_b,
@@ -376,6 +389,7 @@ class H3GuideTimeline(io.ComfyNode):
              enable_b=False, latent_b=None, shared_guides=None) -> io.NodeOutput:
         if cls.SHARED_DOCUMENT_INPUT and shared_guides is not None:
             guides = shared_guides
+        release = parse_release(guides)
         parsed = cls._parse(guides)
         ordered = cls._ordered(parsed)
         channels = [{"name": "一采", "active": not cls.DUAL_CHANNEL or enable_a,
@@ -483,7 +497,7 @@ class H3GuideTimeline(io.ComfyNode):
                     audio = _decode_audio_window(resolve_media_path(roots, guide["asset"]), guide)
             for channel in active_channels:
                 conditioned = channel["conditioning"]
-                before = _keyframe_ids(conditioned) if cls.STRENGTH_ENABLED else None
+                before = _keyframe_ids(conditioned) if (cls.STRENGTH_ENABLED or release["enabled"]) else None
                 result = native.execute(
                     conditioned, channel["latent"], int(guide["frame_index"]),
                     vae=vae, audio_vae=audio_vae, image=image, audio=audio)
@@ -494,6 +508,11 @@ class H3GuideTimeline(io.ComfyNode):
                     if strength < STRENGTH_MAX:
                         _mark_new_keyframe_strength(conditioned, before, strength,
                                                     int(guide["frame_index"]), guide)
+                if release["enabled"] and guide["kind"] == IMAGE_KIND:
+                    created = [k for k in _keyframes_of(conditioned) if id(k) not in before]
+                    if len(created) != 1:
+                        raise ValueError("关键帧阶段控制无法唯一定位本时间轴新增的图片条件。")
+                    created[0][RELEASE_KEY] = release["threshold"]
             del image, audio
 
         keyframe_counts = [len(_keyframes_of(channel["conditioning"]))
@@ -600,6 +619,7 @@ class H3GuideTimelineV2B(H3GuideTimelineV2):
             return True
         try:
             cls._parse(shared_guides)
+            parse_release(shared_guides)
         except ValueError as exc:
             return str(exc)
         return True
